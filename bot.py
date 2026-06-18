@@ -1562,12 +1562,27 @@ async def admin_trial_add_phone_start(call: types.CallbackQuery, state: FSMConte
 @dp.message(AdminPhoneOverride.phone)
 async def admin_trial_phone_input(message: types.Message, state: FSMContext):
     phone = normalize_phone(message.text)
+
     if not phone.startswith("09") or len(phone) != 11:
         await message.answer("❌ شماره نامعتبر:")
         return
+
+    data = await state.get_data()
+
+    if data.get("override_mode") == "delete":
+        delete_phone_override(phone)
+        await state.clear()
+        await message.answer(
+            f"✅ Override شماره {phone} حذف شد.",
+            reply_markup=get_kb(message.from_user.id)
+        )
+        return
+
     await state.update_data(override_phone=phone)
     await state.set_state(AdminPhoneOverride.max_uses)
-    await message.answer(f"🔢 حداکثر تعداد تست برای {phone} رو وارد کن:")
+    await message.answer(
+        f"🔢 حداکثر تعداد تست برای {phone} رو وارد کن:"
+    )
 
 @dp.message(AdminPhoneOverride.max_uses)
 async def admin_trial_phone_max_uses(message: types.Message, state: FSMContext):

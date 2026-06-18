@@ -285,8 +285,27 @@ def create_transaction(user_id, amount):
 def approve_transaction(tx_id, user_id, amount):
     conn = connect()
     cur = conn.cursor()
-    cur.execute("UPDATE users SET balance = balance + %s WHERE telegram_id = %s", (amount, user_id))
-    cur.execute("UPDATE transactions SET status = 'approved' WHERE id = %s AND status = 'pending'", (tx_id,))
+
+    cur.execute(
+        """
+        UPDATE transactions
+        SET status = 'approved'
+        WHERE id = %s
+        AND status = 'pending'
+        """,
+        (tx_id,)
+    )
+
+    if cur.rowcount > 0:
+        cur.execute(
+            """
+            UPDATE users
+            SET balance = balance + %s
+            WHERE telegram_id = %s
+            """,
+            (amount, user_id)
+        )
+
     conn.commit()
     conn.close()
 
