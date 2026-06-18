@@ -7,12 +7,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardRemove
 )
 
 from config import BOT_TOKEN, ADMIN_ID
 from db import (
-    init_db, add_user, get_balance, deduct_balance, set_balance, add_balance,
+    init_db, add_user, get_user, get_balance, deduct_balance, set_balance, add_balance,
     create_transaction, approve_transaction, reject_transaction,
     get_all_users, get_pending_transactions,
     get_all_categories, get_category, add_category, toggle_category, delete_category,
@@ -21,7 +22,16 @@ from db import (
     create_purchase, get_user_purchases, get_all_purchases,
     create_discount_code, get_discount_code, use_discount_code,
     get_all_discount_codes, delete_discount_code,
-    hard_delete_service, update_service
+    hard_delete_service, update_service,
+    set_user_phone, get_referral_count, get_referrals,
+    # Free trial
+    get_trial_config, update_trial_config,
+    get_trial_use_count, get_phone_max_uses, set_phone_max_uses,
+    delete_phone_override, get_all_phone_overrides,
+    record_trial_use, get_all_trial_uses,
+    # Referral
+    get_referral_config, update_referral_config,
+    get_referral_stats, give_referral_reward, get_referral_rewards_history
 )
 
 dp = Dispatcher(storage=MemoryStorage())
@@ -49,6 +59,15 @@ def data_label_short(gb) -> str:
     if gb < 1:
         return f"{round(gb*1024)}MB"
     return f"{gb:g}GB"
+
+def normalize_phone(phone: str) -> str:
+    """نرمال‌سازی شماره تلفن به فرمت 09xxxxxxxxx"""
+    phone = phone.strip().replace(" ", "").replace("-", "")
+    if phone.startswith("+98"):
+        phone = "0" + phone[3:]
+    elif phone.startswith("98") and len(phone) == 12:
+        phone = "0" + phone[2:]
+    return phone
 
 
 # ================================================================
@@ -91,6 +110,23 @@ class AdminDiscountCode(StatesGroup):
 class ApplyDiscount(StatesGroup):
     waiting_for_code = State()
 
+# ---- Free Trial States ----
+class FreeTrial(StatesGroup):
+    waiting_phone = State()
+
+class AdminTrialConfig(StatesGroup):
+    choosing_field = State()
+    entering_value = State()
+
+class AdminPhoneOverride(StatesGroup):
+    phone = State()
+    max_uses = State()
+
+# ---- Referral Admin States ----
+class AdminReferralConfig(StatesGroup):
+    choosing_field = State()
+    entering_value = State()
+
 
 # ================================================================
 # KEYBOARDS
@@ -101,6 +137,7 @@ def get_kb(user_id):
         [KeyboardButton(text="🏠 خانه")],
         [KeyboardButton(text="💰 موجودی من"), KeyboardButton(text="📋 خریدهای من")],
         [KeyboardButton(text="➕ شارژ حساب"), KeyboardButton(text="🛒 خرید سرویس")],
+        [KeyboardButton(text="🎁 تست رایگان"), KeyboardButton(text="👥 رفرال من")],
     ]
     if user_id == ADMIN_ID:
         base.append([KeyboardButton(text="🛠 پنل ادمین")])
@@ -122,6 +159,8 @@ def admin_panel_kb():
         [InlineKeyboardButton(text="➕ افزودن دسته‌بندی",      callback_data="admin:add_category")],
         [InlineKeyboardButton(text="➕ افزودن سرویس",          callback_data="admin:add_service")],
         [InlineKeyboardButton(text="💸 تنظیم موجودی کاربر",   callback_data="admin:edit_balance")],
+        [InlineKeyboardButton(text="🧪 مدیریت تست رایگان",    callback_data="admin:trial_menu")],
+        [InlineKeyboardButton(text="🔗 تنظیمات رفرال",         callback_data="admin:referral_menu")],
     ])
 
 def categories_kb(categories):
@@ -212,6 +251,36 @@ def admin_discounts_kb(codes):
     buttons.append([InlineKeyboardButton(text="🔙 برگشت",    callback_data="admin:back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def admin_trial_menu_kb():
+    cfg = get_trial_config()
+    is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses = cfg
+    status = "✅ فعال" if is_enabled else "❌ غیرفعال"
+    ref_req = "✅ بله" if require_referral else "❌ خیر"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"وضعیت: {status}", callback_data="admin:trial_toggle")],
+        [InlineKeyboardButton(text=f"⏳ مدت: {duration_days} روز", callback_data="admin:trial_set:duration_days")],
+        [InlineKeyboardButton(text=f"📶 حجم: {data_label_short(data_limit_gb)}", callback_data="admin:trial_set:data_limit_gb")],
+        [InlineKeyboardButton(text=f"🔗 نیاز رفرال: {ref_req}", callback_data="admin:trial_toggle_ref")],
+        [InlineKeyboardButton(text=f"👥 حداقل رفرال: {min_referrals}", callback_data="admin:trial_set:min_referrals")],
+        [InlineKeyboardButton(text=f"🔢 تست پیش‌فرض: {default_max_uses} بار", callback_data="admin:trial_set:default_max_uses")],
+        [InlineKeyboardButton(text="📱 مدیریت شماره‌ها", callback_data="admin:trial_phones")],
+        [InlineKeyboardButton(text="📋 لیست تست‌های گرفته‌شده", callback_data="admin:trial_uses")],
+        [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
+    ])
+
+def admin_referral_menu_kb():
+    cfg = get_referral_config()
+    is_enabled, reward_join, reward_purchase, reward_pct = cfg
+    status = "✅ فعال" if is_enabled else "❌ غیرفعال"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"وضعیت: {status}", callback_data="admin:ref_toggle")],
+        [InlineKeyboardButton(text=f"🎁 پاداش ثبت‌نام: {reward_join:,} تومان", callback_data="admin:ref_set:reward_on_join")],
+        [InlineKeyboardButton(text=f"🛍 پاداش خرید (ثابت): {reward_purchase:,} تومان", callback_data="admin:ref_set:reward_on_purchase")],
+        [InlineKeyboardButton(text=f"📊 پاداش خرید (درصد): {reward_pct}%", callback_data="admin:ref_set:reward_purchase_percent")],
+        [InlineKeyboardButton(text="📋 تاریخچه پاداش‌ها", callback_data="admin:ref_history")],
+        [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
+    ])
+
 
 # ================================================================
 # START / HOME
@@ -220,7 +289,58 @@ def admin_discounts_kb(codes):
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
-    add_user(message.from_user.id)
+
+    # پردازش لینک رفرال
+    args = message.text.split()
+    referred_by = None
+    if len(args) > 1 and args[1].startswith("ref_"):
+        try:
+            referred_by = int(args[1][4:])
+            if referred_by == message.from_user.id:
+                referred_by = None
+        except ValueError:
+            referred_by = None
+
+    # ثبت کاربر
+    add_user(message.from_user.id, referred_by)
+
+    # اگه رفرال داشت و رفرال فعاله → پاداش ثبت‌نام
+    if referred_by:
+        user_data = None
+        try:
+            from db import connect as db_connect
+            conn = db_connect()
+            cur = conn.cursor()
+            cur.execute("SELECT referred_by FROM users WHERE telegram_id=%s", (message.from_user.id,))
+            row = cur.fetchone()
+            conn.close()
+            # فقط اگه این کاربر جدیدیه (referred_by همین لحظه ست شده) پاداش بده
+            # بررسی می‌کنیم آیا قبلاً پاداش ثبت‌نام داده شده
+            from db import connect as db_connect2
+            conn2 = db_connect2()
+            cur2 = conn2.cursor()
+            cur2.execute("""
+                SELECT COUNT(*) FROM referral_rewards
+                WHERE referrer_id=%s AND referred_id=%s AND reward_type='join'
+            """, (referred_by, message.from_user.id))
+            already_rewarded = cur2.fetchone()[0] > 0
+            conn2.close()
+        except Exception:
+            already_rewarded = True
+
+        if not already_rewarded:
+            ref_cfg = get_referral_config()
+            if ref_cfg and ref_cfg[0] and ref_cfg[1] > 0:  # is_enabled و reward_on_join
+                give_referral_reward(referred_by, message.from_user.id, "join", ref_cfg[1])
+                try:
+                    await message.bot.send_message(
+                        referred_by,
+                        f"🎉 یه نفر با لینک رفرال شما عضو شد!\n"
+                        f"💚 +{ref_cfg[1]:,} تومان به حسابت اضافه شد."
+                    )
+                except Exception:
+                    pass
+
     bal = get_balance(message.from_user.id)
     await message.answer(
         f"👋 خوش اومدی به ربات VPN!\n\n💰 موجودی: {bal:,} تومان",
@@ -301,6 +421,195 @@ async def handle_receipt_wrong(message: types.Message):
 
 
 # ================================================================
+# FREE TRIAL
+# ================================================================
+
+@dp.message(F.text == "🎁 تست رایگان")
+async def free_trial_start(message: types.Message, state: FSMContext):
+    cfg = get_trial_config()
+    is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses = cfg
+
+    if not is_enabled:
+        await message.answer("❌ در حال حاضر تست رایگان فعال نیست.")
+        return
+
+    user_id = message.from_user.id
+
+    # بررسی شرط رفرال
+    if require_referral and min_referrals > 0:
+        ref_count = get_referral_count(user_id)
+        if ref_count < min_referrals:
+            await message.answer(
+                f"❌ برای دریافت تست رایگان باید حداقل {min_referrals} نفر رو دعوت کرده باشی.\n"
+                f"👥 تعداد زیرمجموعه فعلی: {ref_count}"
+            )
+            return
+
+    # بررسی شماره ثبت‌شده
+    user = get_user(user_id)
+    if user and user[3]:  # phone موجوده
+        phone = user[3]
+        use_count = get_trial_use_count(phone)
+        max_uses = get_phone_max_uses(phone)
+        if use_count >= max_uses:
+            await message.answer(
+                f"❌ شماره {phone} قبلاً از تست رایگان استفاده کرده.\n"
+                f"(استفاده‌های انجام‌شده: {use_count}/{max_uses})"
+            )
+            return
+        # شماره داره و هنوز می‌تونه تست بگیره
+        await _give_free_trial(message, phone, cfg)
+    else:
+        # باید شماره بده
+        await state.set_state(FreeTrial.waiting_phone)
+        kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📱 اشتراک‌گذاری شماره", request_contact=True)]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        await message.answer(
+            "📱 برای دریافت تست رایگان، شماره موبایلت رو تایید کن:\n\n"
+            "روی دکمه زیر کلیک کن یا شماره‌ات رو بفرست:",
+            reply_markup=kb
+        )
+
+@dp.message(FreeTrial.waiting_phone, F.contact)
+async def trial_phone_contact(message: types.Message, state: FSMContext):
+    phone = normalize_phone(message.contact.phone_number)
+    await state.clear()
+    cfg = get_trial_config()
+    await _process_trial_phone(message, phone, cfg)
+
+@dp.message(FreeTrial.waiting_phone, F.text)
+async def trial_phone_text(message: types.Message, state: FSMContext):
+    phone = normalize_phone(message.text)
+    if not phone.startswith("09") or len(phone) != 11:
+        await message.answer("❌ شماره نامعتبر. مثلاً: 09123456789")
+        return
+    await state.clear()
+    cfg = get_trial_config()
+    await _process_trial_phone(message, phone, cfg)
+
+async def _process_trial_phone(message: types.Message, phone: str, cfg):
+    user_id = message.from_user.id
+    use_count = get_trial_use_count(phone)
+    max_uses = get_phone_max_uses(phone)
+
+    if use_count >= max_uses:
+        await message.answer(
+            f"❌ شماره {phone} قبلاً از تست رایگان استفاده کرده.\n"
+            f"(استفاده‌های انجام‌شده: {use_count}/{max_uses})",
+            reply_markup=get_kb(user_id)
+        )
+        return
+
+    # ذخیره شماره در پروفایل کاربر
+    set_user_phone(user_id, phone)
+    await _give_free_trial(message, phone, cfg)
+
+async def _give_free_trial(message: types.Message, phone: str, cfg):
+    user_id = message.from_user.id
+    is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses = cfg
+
+    record_trial_use(phone, user_id)
+
+    sep = "─" * 22
+    await message.answer(
+        f"✅ تست رایگان فعال شد!\n{sep}\n"
+        f"📱 شماره: {phone}\n"
+        f"⏳ مدت: {duration_days} روز\n"
+        f"{format_data(data_limit_gb)}\n{sep}\n"
+        f"📩 اطلاعات اتصال به زودی ارسال می‌شه.",
+        reply_markup=get_kb(user_id)
+    )
+
+    username = message.from_user.username or "ندارد"
+    await message.bot.send_message(
+        ADMIN_ID,
+        f"🧪 تست رایگان جدید!\n"
+        f"👤 User: {user_id} (@{username})\n"
+        f"📱 شماره: {phone}\n"
+        f"⏳ {duration_days} روز | {data_label_short(data_limit_gb)}"
+    )
+
+
+# ================================================================
+# REFERRAL
+# ================================================================
+
+@dp.message(F.text == "👥 رفرال من")
+async def referral_panel(message: types.Message):
+    user_id = message.from_user.id
+    ref_cfg = get_referral_config()
+    is_enabled, reward_join, reward_purchase, reward_pct = ref_cfg
+
+    ref_count, total_reward = get_referral_stats(user_id)
+    bot_info = await message.bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+
+    sep = "─" * 22
+    text = (
+        f"👥 پنل رفرال شما\n{sep}\n"
+        f"🔗 لینک دعوت:\n{ref_link}\n{sep}\n"
+        f"👤 تعداد زیرمجموعه: {ref_count} نفر\n"
+        f"💰 مجموع پاداش دریافتی: {total_reward:,} تومان\n{sep}\n"
+    )
+
+    if is_enabled:
+        text += "🎁 پاداش‌های فعلی:\n"
+        if reward_join > 0:
+            text += f"  • ثبت‌نام هر نفر: {reward_join:,} تومان\n"
+        if reward_purchase > 0:
+            text += f"  • خرید هر نفر (ثابت): {reward_purchase:,} تومان\n"
+        if reward_pct > 0:
+            text += f"  • خرید هر نفر (درصدی): {reward_pct}% مبلغ خرید\n"
+        if reward_join == 0 and reward_purchase == 0 and reward_pct == 0:
+            text += "  • در حال حاضر پاداشی تنظیم نشده.\n"
+    else:
+        text += "⚠️ سیستم رفرال فعلاً غیرفعاله."
+
+    buttons = [
+        [InlineKeyboardButton(text="📋 تاریخچه پاداش‌ها", callback_data="ref:history")],
+        [InlineKeyboardButton(text="👥 لیست زیرمجموعه‌ها", callback_data="ref:list")],
+    ]
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data == "ref:history")
+async def ref_history(call: types.CallbackQuery):
+    rewards = get_referral_rewards_history(call.from_user.id)
+    if not rewards:
+        await call.message.edit_text("📋 هنوز پاداشی دریافت نکردی.", reply_markup=back_kb("ref:back"))
+        await call.answer()
+        return
+    text = "📋 تاریخچه پاداش‌های رفرال:\n\n"
+    for r in rewards:
+        referred_id, rtype, amount, created_at = r
+        type_label = "ثبت‌نام" if rtype == "join" else "خرید"
+        text += f"👤 {referred_id} | {type_label} | +{amount:,} تومان | {created_at.strftime('%Y-%m-%d')}\n"
+    await call.message.edit_text(text, reply_markup=back_kb("ref:back"))
+    await call.answer()
+
+@dp.callback_query(F.data == "ref:list")
+async def ref_list(call: types.CallbackQuery):
+    refs = get_referrals(call.from_user.id)
+    if not refs:
+        await call.message.edit_text("👥 هنوز زیرمجموعه‌ای نداری.", reply_markup=back_kb("ref:back"))
+        await call.answer()
+        return
+    text = f"👥 زیرمجموعه‌های شما ({len(refs)} نفر):\n\n"
+    for r in refs:
+        uid, bal, joined = r
+        text += f"🆔 {uid} | {joined.strftime('%Y-%m-%d')}\n"
+    await call.message.edit_text(text, reply_markup=back_kb("ref:back"))
+    await call.answer()
+
+@dp.callback_query(F.data == "ref:back")
+async def ref_back(call: types.CallbackQuery):
+    await call.message.delete()
+    await call.answer()
+
+
+# ================================================================
 # SHOP
 # ================================================================
 
@@ -345,7 +654,6 @@ async def show_category_services(call: types.CallbackQuery):
         await call.answer()
         return
 
-    # متن کامل با جزئیات سرویس‌ها
     sep = "─" * 22
     text = f"{cemoji} {cname}\n💰 موجودی شما: {bal:,} تومان\n\n{sep}\n"
     for s in services:
@@ -497,6 +805,9 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
     purchase_id = create_purchase(user_id, sid, name, final_price)
     new_bal = get_balance(user_id)
 
+    # پاداش رفرال برای خرید
+    await _handle_purchase_referral_reward(bot, user_id, final_price)
+
     sep = "─" * 22
     await call.message.edit_text(
         f"✅ خرید موفق!\n{sep}\n"
@@ -533,6 +844,10 @@ async def confirm_buy(call: types.CallbackQuery, bot: Bot):
         return
     purchase_id = create_purchase(user_id, sid, name, price)
     new_bal = get_balance(user_id)
+
+    # پاداش رفرال برای خرید
+    await _handle_purchase_referral_reward(bot, user_id, price)
+
     sep = "─" * 22
     await call.message.edit_text(
         f"✅ خرید موفق!\n{sep}\n"
@@ -553,6 +868,36 @@ async def confirm_buy(call: types.CallbackQuery, bot: Bot):
         f"🔑 سفارش: #{purchase_id}"
     )
     await call.answer("✅ خرید موفق!")
+
+async def _handle_purchase_referral_reward(bot: Bot, buyer_id: int, amount_paid: int):
+    """اگه خریدار زیرمجموعه کسیه، به دعوت‌کننده پاداش بده"""
+    ref_cfg = get_referral_config()
+    if not ref_cfg or not ref_cfg[0]:  # is_enabled
+        return
+
+    user = get_user(buyer_id)
+    if not user or not user[2]:  # referred_by
+        return
+
+    referrer_id = user[2]
+    is_enabled, reward_join, reward_purchase, reward_pct = ref_cfg
+
+    reward = 0
+    if reward_purchase > 0:
+        reward += reward_purchase
+    if reward_pct > 0:
+        reward += int(amount_paid * float(reward_pct) / 100)
+
+    if reward > 0:
+        give_referral_reward(referrer_id, buyer_id, "purchase", reward)
+        try:
+            await bot.send_message(
+                referrer_id,
+                f"🎉 یکی از زیرمجموعه‌هات خرید کرد!\n"
+                f"💚 +{reward:,} تومان پاداش به حسابت اضافه شد."
+            )
+        except Exception:
+            pass
 
 
 # ================================================================
@@ -837,7 +1182,6 @@ async def admin_editfield(call: types.CallbackQuery, state: FSMContext):
     field = parts[3]
     await state.update_data(editing_field=field)
     await state.set_state(AdminEditService.entering_value)
-
     prompts = {
         "name":        "📦 نام جدید سرویس رو وارد کن:",
         "description": "📝 توضیحات جدید رو وارد کن (یا /skip برای خالی):",
@@ -974,7 +1318,7 @@ async def admin_add_discount_start(call: types.CallbackQuery, state: FSMContext)
     await call.answer()
 
 @dp.message(AdminDiscountCode.code)
-async def admin_discount_code(message: types.Message, state: FSMContext):
+async def admin_discount_code_handler(message: types.Message, state: FSMContext):
     await state.update_data(code=message.text.strip().upper())
     await state.set_state(AdminDiscountCode.discount_type)
     await message.answer(
@@ -1111,6 +1455,242 @@ async def admin_edit_balance_amount(message: types.Message, state: FSMContext, b
         f"✅ موجودی کاربر {uid} {action}\n💰 موجودی جدید: {new_bal:,} تومان\n{notif}",
         reply_markup=get_kb(message.from_user.id)
     )
+
+
+# ================================================================
+# ADMIN: FREE TRIAL MANAGEMENT
+# ================================================================
+
+@dp.callback_query(F.data == "admin:trial_menu")
+async def admin_trial_menu(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb())
+    await call.answer()
+
+@dp.callback_query(F.data == "admin:trial_toggle")
+async def admin_trial_toggle(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    cfg = get_trial_config()
+    new_val = not cfg[0]
+    update_trial_config(is_enabled=new_val)
+    await call.answer("✅ فعال شد" if new_val else "❌ غیرفعال شد", show_alert=True)
+    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb())
+
+@dp.callback_query(F.data == "admin:trial_toggle_ref")
+async def admin_trial_toggle_ref(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    cfg = get_trial_config()
+    new_val = not cfg[3]
+    update_trial_config(require_referral=new_val)
+    await call.answer("✅ نیاز به رفرال فعال شد" if new_val else "❌ نیاز به رفرال حذف شد", show_alert=True)
+    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb())
+
+@dp.callback_query(F.data.startswith("admin:trial_set:"))
+async def admin_trial_set_field(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    field = call.data.split(":")[2]
+    await state.set_state(AdminTrialConfig.entering_value)
+    await state.update_data(trial_field=field)
+    prompts = {
+        "duration_days":    "⏳ مدت جدید تست رو به روز وارد کن:",
+        "data_limit_gb":    "📶 حجم جدید تست رو به GB وارد کن (مثلاً 5 یا 0.5):",
+        "min_referrals":    "👥 حداقل تعداد رفرال لازم رو وارد کن (0 = بدون محدودیت):",
+        "default_max_uses": "🔢 تعداد پیش‌فرض تست برای هر شماره رو وارد کن:",
+    }
+    await call.message.answer(prompts.get(field, "مقدار جدید رو وارد کن:"))
+    await call.answer()
+
+@dp.message(AdminTrialConfig.entering_value)
+async def admin_trial_save_field(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    field = data["trial_field"]
+    raw = message.text.strip()
+
+    if field == "data_limit_gb":
+        try:
+            value = float(raw.replace(",", "."))
+        except ValueError:
+            await message.answer("❌ عدد معتبر:")
+            return
+    else:
+        if not raw.isdigit():
+            await message.answer("❌ فقط عدد صحیح:")
+            return
+        value = int(raw)
+
+    update_trial_config(**{field: value})
+    await state.clear()
+    await message.answer("✅ تنظیمات تست ذخیره شد.", reply_markup=get_kb(message.from_user.id))
+
+# ---- مدیریت شماره‌ها ----
+@dp.callback_query(F.data == "admin:trial_phones")
+async def admin_trial_phones(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    overrides = get_all_phone_overrides()
+    cfg = get_trial_config()
+    default_max = cfg[5]
+    sep = "─" * 22
+    text = f"📱 مدیریت شماره‌ها\n{sep}\n🔢 تعداد پیش‌فرض: {default_max} بار\n{sep}\n"
+    if overrides:
+        text += "شماره‌های با تعداد اختصاصی:\n"
+        for phone, max_uses in overrides:
+            text += f"📱 {phone}: {max_uses} بار\n"
+    else:
+        text += "هیچ override ای ثبت نشده.\n"
+    buttons = [
+        [InlineKeyboardButton(text="➕ تنظیم شماره اختصاصی", callback_data="admin:trial_add_phone")],
+        [InlineKeyboardButton(text="🗑 حذف override شماره",   callback_data="admin:trial_del_phone")],
+        [InlineKeyboardButton(text="📋 لیست کامل تست‌ها",    callback_data="admin:trial_uses")],
+        [InlineKeyboardButton(text="🔙 برگشت",                callback_data="admin:trial_menu")],
+    ]
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await call.answer()
+
+@dp.callback_query(F.data == "admin:trial_add_phone")
+async def admin_trial_add_phone_start(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminPhoneOverride.phone)
+    await call.message.answer("📱 شماره تلفن رو وارد کن (مثلاً 09123456789):")
+    await call.answer()
+
+@dp.message(AdminPhoneOverride.phone)
+async def admin_trial_phone_input(message: types.Message, state: FSMContext):
+    phone = normalize_phone(message.text)
+    if not phone.startswith("09") or len(phone) != 11:
+        await message.answer("❌ شماره نامعتبر:")
+        return
+    await state.update_data(override_phone=phone)
+    await state.set_state(AdminPhoneOverride.max_uses)
+    await message.answer(f"🔢 حداکثر تعداد تست برای {phone} رو وارد کن:")
+
+@dp.message(AdminPhoneOverride.max_uses)
+async def admin_trial_phone_max_uses(message: types.Message, state: FSMContext):
+    if not message.text or not message.text.isdigit():
+        await message.answer("❌ فقط عدد:")
+        return
+    data = await state.get_data()
+    phone = data["override_phone"]
+    max_uses = int(message.text)
+    set_phone_max_uses(phone, max_uses)
+    await state.clear()
+    await message.answer(
+        f"✅ تنظیم شد!\n📱 {phone}: حداکثر {max_uses} بار تست",
+        reply_markup=get_kb(message.from_user.id)
+    )
+
+@dp.callback_query(F.data == "admin:trial_del_phone")
+async def admin_trial_del_phone_start(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminPhoneOverride.phone)
+    await state.update_data(override_mode="delete")
+    await call.message.answer("📱 شماره‌ای که می‌خوای override ش رو حذف کنی وارد کن:")
+    await call.answer()
+
+@dp.callback_query(F.data == "admin:trial_uses")
+async def admin_trial_uses(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    uses = get_all_trial_uses()
+    if not uses:
+        text = "📋 هنوز هیچ تستی گرفته نشده."
+    else:
+        text = f"📋 آخرین تست‌های گرفته‌شده ({len(uses)}):\n\n"
+        for phone, tid, used_at in uses:
+            text += f"📱 {phone} | 👤 {tid} | {used_at.strftime('%m-%d %H:%M')}\n"
+    await call.message.edit_text(text, reply_markup=back_kb("admin:trial_phones"))
+    await call.answer()
+
+
+# ================================================================
+# ADMIN: REFERRAL MANAGEMENT
+# ================================================================
+
+@dp.callback_query(F.data == "admin:referral_menu")
+async def admin_referral_menu(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.edit_text("🔗 تنظیمات سیستم رفرال:", reply_markup=admin_referral_menu_kb())
+    await call.answer()
+
+@dp.callback_query(F.data == "admin:ref_toggle")
+async def admin_ref_toggle(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    cfg = get_referral_config()
+    new_val = not cfg[0]
+    update_referral_config(is_enabled=new_val)
+    await call.answer("✅ رفرال فعال شد" if new_val else "❌ رفرال غیرفعال شد", show_alert=True)
+    await call.message.edit_text("🔗 تنظیمات سیستم رفرال:", reply_markup=admin_referral_menu_kb())
+
+@dp.callback_query(F.data.startswith("admin:ref_set:"))
+async def admin_ref_set_field(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    field = call.data.split(":")[2]
+    await state.set_state(AdminReferralConfig.entering_value)
+    await state.update_data(ref_field=field)
+    prompts = {
+        "reward_on_join":          "🎁 پاداش ثبت‌نام رو به تومان وارد کن (0 = بدون پاداش):",
+        "reward_on_purchase":      "🛍 پاداش ثابت خرید رو به تومان وارد کن (0 = بدون پاداش):",
+        "reward_purchase_percent": "📊 درصد پاداش خرید رو وارد کن (0 = بدون پاداش، مثلاً 5 برای 5%):",
+    }
+    await call.message.answer(prompts.get(field, "مقدار جدید رو وارد کن:"))
+    await call.answer()
+
+@dp.message(AdminReferralConfig.entering_value)
+async def admin_ref_save_field(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    field = data["ref_field"]
+    raw = message.text.strip()
+
+    if field == "reward_purchase_percent":
+        try:
+            value = float(raw.replace(",", "."))
+            if value < 0 or value > 100:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ عدد بین 0 تا 100 وارد کن:")
+            return
+    else:
+        if not raw.isdigit():
+            await message.answer("❌ فقط عدد صحیح:")
+            return
+        value = int(raw)
+
+    update_referral_config(**{field: value})
+    await state.clear()
+    await message.answer("✅ تنظیمات رفرال ذخیره شد.", reply_markup=get_kb(message.from_user.id))
+
+@dp.callback_query(F.data == "admin:ref_history")
+async def admin_ref_history(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    from db import connect as db_connect
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT referrer_id, referred_id, reward_type, amount, created_at
+        FROM referral_rewards ORDER BY created_at DESC LIMIT 50
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        text = "📋 هنوز هیچ پاداش رفرالی ثبت نشده."
+    else:
+        text = f"📋 تاریخچه پاداش‌های رفرال ({len(rows)}):\n\n"
+        for referrer, referred, rtype, amount, created_at in rows:
+            type_label = "ثبت‌نام" if rtype == "join" else "خرید"
+            text += f"👤{referrer}→{referred} | {type_label} | +{amount:,}T | {created_at.strftime('%m-%d %H:%M')}\n"
+    await call.message.edit_text(text, reply_markup=back_kb("admin:referral_menu"))
+    await call.answer()
 
 
 # ================================================================
