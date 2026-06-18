@@ -362,10 +362,10 @@ def get_all_purchases():
     conn.close()
     return rows
 
+
 # -------------------- HARD DELETE & UPDATE --------------------
 
 def hard_delete_service(service_id):
-    """حذف واقعی سرویس از دیتابیس"""
     conn = connect()
     cur = conn.cursor()
     cur.execute("DELETE FROM services WHERE id=%s", (service_id,))
@@ -374,7 +374,6 @@ def hard_delete_service(service_id):
 
 
 def update_service(service_id, field, value):
-    """ویرایش یه فیلد از سرویس"""
     field_map = {
         "name": "name",
         "description": "description",
@@ -399,16 +398,39 @@ def update_service(service_id, field, value):
 # -------------------- DISCOUNT CODES --------------------
 
 def create_discount_code(code, discount_type, discount_value, max_uses=None):
+    """
+    اگه کد قبلاً حذف شده بود (is_active=FALSE) reactivate می‌کنه
+    وگرنه insert جدید می‌زنه
+    """
+    code = code.strip().upper()
     conn = connect()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO discount_codes (code, discount_type, discount_value, max_uses)
-        VALUES (%s, %s, %s, %s) RETURNING id
-    """, (code, discount_type, discount_value, max_uses))
-    cid = cur.fetchone()[0]
-    conn.commit()
-    conn.close()
-    return cid
+
+    # بررسی وجود کد (فعال یا غیرفعال)
+    cur.execute("SELECT id, is_active FROM discount_codes WHERE code=%s", (code,))
+    existing = cur.fetchone()
+
+    if existing:
+        existing_id, is_active = existing
+        # reactivate و آپدیت مقادیر
+        cur.execute("""
+            UPDATE discount_codes
+            SET discount_type=%s, discount_value=%s, max_uses=%s,
+                used_count=0, is_active=TRUE, created_at=NOW()
+            WHERE id=%s
+        """, (discount_type, discount_value, max_uses, existing_id))
+        conn.commit()
+        conn.close()
+        return existing_id
+    else:
+        cur.execute("""
+            INSERT INTO discount_codes (code, discount_type, discount_value, max_uses)
+            VALUES (%s, %s, %s, %s) RETURNING id
+        """, (code, discount_type, discount_value, max_uses))
+        cid = cur.fetchone()[0]
+        conn.commit()
+        conn.close()
+        return cid
 
 
 def get_discount_code(code):
@@ -418,7 +440,7 @@ def get_discount_code(code):
         SELECT id, code, discount_type, discount_value, max_uses, used_count
         FROM discount_codes
         WHERE code=%s AND is_active=TRUE
-    """, (code.upper(),))
+    """, (code.strip().upper(),))
     r = cur.fetchone()
     conn.close()
     return r
@@ -445,8 +467,12 @@ def get_all_discount_codes():
 
 
 def delete_discount_code(dc_id):
+    """
+    حذف واقعی از دیتابیس — نه soft delete
+    این کار باعث میشه بشه دوباره همون کد رو ثبت کرد
+    """
     conn = connect()
     cur = conn.cursor()
-    cur.execute("UPDATE discount_codes SET is_active=FALSE WHERE id=%s", (dc_id,))
+    cur.execute("DELETE FROM discount_codes WHERE id=%s", (dc_id,))
     conn.commit()
     conn.close()
