@@ -134,6 +134,7 @@ def init_db():
             id INTEGER PRIMARY KEY DEFAULT 1,
             is_enabled BOOLEAN DEFAULT FALSE,
             reward_on_join INTEGER DEFAULT 0,
+            first_purchase_reward INTEGER DEFAULT 0,
             reward_on_purchase INTEGER DEFAULT 0,
             reward_purchase_percent NUMERIC(5,2) DEFAULT 0
         )
@@ -163,6 +164,7 @@ def init_db():
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT DEFAULT NULL")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT NULL")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS joined_at TIMESTAMP DEFAULT NOW()")
+    cur.execute("ALTER TABLE referral_config ADD COLUMN IF NOT EXISTS first_purchase_reward INTEGER DEFAULT 0")
 
     conn.commit()
     conn.close()
@@ -702,17 +704,17 @@ def get_all_trial_uses():
 # ================== REFERRAL ==================
 
 def get_referral_config():
-    """برمی‌گردونه (is_enabled, reward_on_join, reward_on_purchase, reward_purchase_percent)"""
+    """برمی‌گردونه (is_enabled, reward_on_join, first_purchase_reward, reward_on_purchase, reward_purchase_percent)"""
     conn = connect()
     cur = conn.cursor()
-    cur.execute("SELECT is_enabled, reward_on_join, reward_on_purchase, reward_purchase_percent FROM referral_config WHERE id=1")
+    cur.execute("SELECT is_enabled, reward_on_join, first_purchase_reward, reward_on_purchase, reward_purchase_percent FROM referral_config WHERE id=1")
     r = cur.fetchone()
     conn.close()
     return r
 
 
 def update_referral_config(**kwargs):
-    allowed = {"is_enabled", "reward_on_join", "reward_on_purchase", "reward_purchase_percent"}
+    allowed = {"is_enabled", "reward_on_join", "first_purchase_reward", "reward_on_purchase", "reward_purchase_percent"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return
@@ -749,6 +751,16 @@ def give_referral_reward(referrer_id, referred_id, reward_type, amount):
     """, (referrer_id, referred_id, reward_type, amount))
     conn.commit()
     conn.close()
+
+
+def has_previous_purchase(user_id):
+    """چک می‌کنه آیا این کاربر قبل از خرید فعلی هم خرید داشته (بیشتر از ۱ خرید = اولین خرید نیست)"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM purchases WHERE user_id=%s", (user_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r[0] > 1
 
 
 def get_referral_rewards_history(user_id, limit=20):
