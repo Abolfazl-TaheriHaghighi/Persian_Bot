@@ -1,17 +1,65 @@
 from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import ADMIN_ID
-from db import (
+from config import ADMIN_ID, is_admin
+from db_final import (
     add_user, get_balance, get_user_purchases,
     get_referral_config, give_referral_reward,
+    get_active_channels,
     connect as db_connect
 )
 from keyboards import get_kb
-from states import DepositStates
 
 router = Router()
+
+
+# ================================================================
+# MEMBERSHIP CHECK
+# ================================================================
+
+async def check_membership(bot: Bot, user_id: int) -> list:
+    """لیست کانال‌هایی که کاربر عضوشون نیست رو برمی‌گردونه"""
+    channels = get_active_channels()
+    not_joined = []
+    for ch in channels:
+        ch_id, channel_id, username, title, invite_link = ch
+        try:
+            member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+            if member.status in ("left", "kicked", "banned"):
+                not_joined.append((ch_id, channel_id, username, title, invite_link))
+        except Exception:
+            not_joined.append((ch_id, channel_id, username, title, invite_link))
+    return not_joined
+
+
+async def send_join_message(message: types.Message, not_joined: list):
+    """پیام جوین اجباری با دکمه‌های چنل‌ها"""
+    text = "⛔️ برای استفاده از ربات باید عضو کانال‌های زیر بشی:\n\n"
+    buttons = []
+    for ch_id, channel_id, username, title, invite_link in not_joined:
+        link = invite_link or (f"https://t.me/{username.lstrip('@')}" if username else None)
+        if link:
+            buttons.append([InlineKeyboardButton(text=f"📢 {title}", url=link)])
+
+    buttons.append([InlineKeyboardButton(text="✅ عضو شدم، بررسی کن", callback_data="check_membership")])
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data == "check_membership")
+async def recheck_membership(call: types.CallbackQuery):
+    not_joined = await check_membership(call.bot, call.from_user.id)
+    if not_joined:
+        await call.answer("❌ هنوز عضو همه کانال‌ها نشدی!", show_alert=True)
+    else:
+        await call.message.delete()
+        bal = get_balance(call.from_user.id)
+        await call.message.answer(
+            f"✅ عضویت تایید شد!\n\n💰 موجودی: {bal:,} تومان",
+            reply_markup=get_kb(call.from_user.id)
+        )
+        await call.answer()
 
 
 # ================================================================
@@ -34,6 +82,12 @@ async def start(message: types.Message, state: FSMContext):
             referred_by = None
 
     add_user(message.from_user.id, referred_by)
+
+    # چک عضویت
+    not_joined = await check_membership(message.bot, message.from_user.id)
+    if not_joined:
+        await send_join_message(message, not_joined)
+        return
 
     # اگه رفرال داشت → پاداش ثبت‌نام
     if referred_by:
@@ -72,6 +126,13 @@ async def start(message: types.Message, state: FSMContext):
 @router.message(F.text == "🏠 خانه")
 async def home(message: types.Message, state: FSMContext):
     await state.clear()
+
+    # چک عضویت
+    not_joined = await check_membership(message.bot, message.from_user.id)
+    if not_joined:
+        await send_join_message(message, not_joined)
+        return
+
     bal = get_balance(message.from_user.id)
     await message.answer(
         f"🏠 صفحه اصلی\n\n💰 موجودی: {bal:,} تومان",
@@ -90,12 +151,73 @@ async def balance(message: types.Message):
 
 
 # ================================================================
-# PURCHASE HISTORY
+# SERVICE STATUS
 # ================================================================
 
 @router.message(F.text == "📊 وضعیت سرویس‌ها")
 async def service_status(message: types.Message):
-    await message.answer("🔧 این بخش به زودی اضافه میشه.")
+    from db_final import get_user_vpn_accounts
+    from panel import get_client_status
+    import datetime
+
+    accounts = get_user_vpn_accounts(message.from_user.id)
+    if not accounts:
+        await message.answer("📊 هنوز سرویس فعالی نداری.")
+        return
+
+    sep = "─" * 22
+    text = f"📊 وضعیت سرویس‌های شما\n{sep}\n"
+
+    for acc in accounts:
+        email, uuid, sub_url, inbound_id, expire_time, data_limit, created_at, is_trial = acc
+        label = "🧪 تست" if is_trial else "💎 سرویس"
+
+        if expire_time:
+            exp_dt = datetime.datetime.fromtimestamp(expire_time / 1000)
+            remaining = (exp_dt - datetime.datetime.now()).days
+            exp_str = exp_dt.strftime('%Y-%m-%d')
+            if remaining > 0:
+                time_str = f"📅 انقضا: {exp_str} ({remaining} روز مونده)"
+            else:
+                time_str = "⛔️ منقضی شده"
+        else:
+            time_str = "📅 بدون انقضا"
+
+        text += f"{label}\n{time_str}\n"
+
+        if sub_url:
+            text += f"🔗 لینک سابسکریپشن:\n`{sub_url}`\n"
+
+        stat = await get_client_status(email)
+        if stat:
+            up = stat.get("up", 0)
+            down = stat.get("down", 0)
+            total = stat.get("total", 0)
+            used = up + down
+            enable = stat.get("enable", True)
+
+            def _fmt(b):
+                if b >= 1024 ** 3:
+                    return f"{b / 1024 ** 3:.1f} GB"
+                return f"{b / 1024 ** 2:.0f} MB"
+
+            text += f"📶 مصرف: {_fmt(used)}"
+            if total > 0:
+                text += f" از {_fmt(total)} ({_fmt(total - used)} مونده)"
+            text += f"\n🔘 وضعیت: {'✅ فعال' if enable else '❌ غیرفعال'}\n"
+        else:
+            text += "⚠️ اطلاعات از پنل دریافت نشد\n"
+
+        text += f"{sep}\n"
+
+    await message.answer(text, parse_mode="Markdown")
+
+
+# ================================================================
+# PURCHASE HISTORY
+# ================================================================
+
+@router.message(F.text == "📋 خریدهای من")
 async def my_purchases(message: types.Message):
     purchases = get_user_purchases(message.from_user.id)
     if not purchases:

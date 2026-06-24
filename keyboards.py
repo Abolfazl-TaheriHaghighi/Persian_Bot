@@ -2,8 +2,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
-from config import ADMIN_ID
-from db import get_trial_config, get_referral_config
+from config import ADMIN_ID, is_admin
+from db_final import get_trial_config, get_referral_config
 
 
 def get_kb(user_id):
@@ -12,8 +12,9 @@ def get_kb(user_id):
         [KeyboardButton(text="💰 موجودی من"), KeyboardButton(text="📋 خریدهای من")],
         [KeyboardButton(text="➕ شارژ حساب"), KeyboardButton(text="🛒 خرید سرویس")],
         [KeyboardButton(text="🎁 تست رایگان"), KeyboardButton(text="👥 رفرال من")],
+        [KeyboardButton(text="🤝 درخواست همکاری")],
     ]
-    if user_id == ADMIN_ID:
+    if is_admin(user_id):
         base.append([KeyboardButton(text="🛠 پنل ادمین")])
     return ReplyKeyboardMarkup(keyboard=base, resize_keyboard=True)
 
@@ -37,6 +38,12 @@ def admin_panel_kb():
         [InlineKeyboardButton(text="💸 تنظیم موجودی کاربر",   callback_data="admin:edit_balance")],
         [InlineKeyboardButton(text="🧪 مدیریت تست رایگان",    callback_data="admin:trial_menu")],
         [InlineKeyboardButton(text="🔗 تنظیمات رفرال",         callback_data="admin:referral_menu")],
+        [InlineKeyboardButton(text="📢 کانال‌های اجباری",      callback_data="admin:channels")],
+        [InlineKeyboardButton(text="⚙️ تنظیمات پنل VPN",       callback_data="admin:panel_config")],
+        [InlineKeyboardButton(text="🤝 مدیریت همکاران",         callback_data="admin:partners")],
+        [InlineKeyboardButton(text="👁 دسترسی دسته‌بندی‌ها",   callback_data="admin:cat_visibility")],
+        [InlineKeyboardButton(text="📣 ارسال پیام گروهی",       callback_data="admin:broadcast")],
+        [InlineKeyboardButton(text="🔑 لایسنس",                  callback_data="admin:license")],
     ])
 
 

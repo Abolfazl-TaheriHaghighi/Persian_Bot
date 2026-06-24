@@ -134,7 +134,6 @@ def init_db():
             id INTEGER PRIMARY KEY DEFAULT 1,
             is_enabled BOOLEAN DEFAULT FALSE,
             reward_on_join INTEGER DEFAULT 0,
-            first_purchase_reward INTEGER DEFAULT 0,
             reward_on_purchase INTEGER DEFAULT 0,
             reward_purchase_percent NUMERIC(5,2) DEFAULT 0
         )
@@ -157,6 +156,52 @@ def init_db():
         )
     """)
 
+    # ---- تنظیمات پنل VPN ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS panel_config (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            panel_url TEXT DEFAULT NULL,
+            auth_type TEXT DEFAULT 'userpass',
+            username TEXT DEFAULT NULL,
+            password TEXT DEFAULT NULL,
+            api_key TEXT DEFAULT NULL,
+            inbound_id INTEGER DEFAULT NULL,
+            panel_path TEXT DEFAULT ''
+        )
+    """)
+    cur.execute("INSERT INTO panel_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+
+    # ---- لایسنس ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS license_info (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            license_key TEXT DEFAULT NULL,
+            activated_at TIMESTAMP DEFAULT NULL,
+            last_checked TIMESTAMP DEFAULT NULL
+        )
+    """)
+    cur.execute("INSERT INTO license_info (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+
+    # ---- اکانت‌های VPN ساخته‌شده ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS vpn_accounts (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            purchase_id INTEGER,
+            email TEXT NOT NULL,
+            uuid TEXT,
+            sub_id TEXT,
+            sub_url TEXT,
+            inbound_id INTEGER,
+            expire_time BIGINT,
+            data_limit BIGINT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            is_trial BOOLEAN DEFAULT FALSE
+        )
+    """)
+    cur.execute("ALTER TABLE vpn_accounts ADD COLUMN IF NOT EXISTS sub_id TEXT")
+    cur.execute("ALTER TABLE vpn_accounts ADD COLUMN IF NOT EXISTS sub_url TEXT")
+
     # migrations برای دیتابیس‌های قبلی
     cur.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS data_limit_gb NUMERIC(10,2) NOT NULL DEFAULT 0")
     cur.execute("ALTER TABLE services ALTER COLUMN data_limit_gb TYPE NUMERIC(10,2)")
@@ -164,7 +209,36 @@ def init_db():
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT DEFAULT NULL")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT NULL")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS joined_at TIMESTAMP DEFAULT NOW()")
-    cur.execute("ALTER TABLE referral_config ADD COLUMN IF NOT EXISTS first_purchase_reward INTEGER DEFAULT 0")
+
+    # ---- همکاران ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS partners (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT UNIQUE NOT NULL,
+            phone TEXT,
+            description TEXT,
+            status TEXT DEFAULT 'active',
+            added_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # ---- درخواست‌های همکاری ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS partner_requests (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            phone TEXT NOT NULL,
+            description TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # ---- دسترسی دسته‌بندی‌ها ----
+    cur.execute("""
+        ALTER TABLE categories ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'all'
+    """)
+    # visibility: 'all' = همه | 'partners' = فقط همکاران | 'both' = همه + همکاران (یکیه با all)
 
     conn.commit()
     conn.close()
@@ -704,17 +778,17 @@ def get_all_trial_uses():
 # ================== REFERRAL ==================
 
 def get_referral_config():
-    """برمی‌گردونه (is_enabled, reward_on_join, first_purchase_reward, reward_on_purchase, reward_purchase_percent)"""
+    """برمی‌گردونه (is_enabled, reward_on_join, reward_on_purchase, reward_purchase_percent)"""
     conn = connect()
     cur = conn.cursor()
-    cur.execute("SELECT is_enabled, reward_on_join, first_purchase_reward, reward_on_purchase, reward_purchase_percent FROM referral_config WHERE id=1")
+    cur.execute("SELECT is_enabled, reward_on_join, reward_on_purchase, reward_purchase_percent FROM referral_config WHERE id=1")
     r = cur.fetchone()
     conn.close()
     return r
 
 
 def update_referral_config(**kwargs):
-    allowed = {"is_enabled", "reward_on_join", "first_purchase_reward", "reward_on_purchase", "reward_purchase_percent"}
+    allowed = {"is_enabled", "reward_on_join", "reward_on_purchase", "reward_purchase_percent"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return
@@ -753,16 +827,6 @@ def give_referral_reward(referrer_id, referred_id, reward_type, amount):
     conn.close()
 
 
-def has_previous_purchase(user_id):
-    """چک می‌کنه آیا این کاربر قبل از خرید فعلی هم خرید داشته (بیشتر از ۱ خرید = اولین خرید نیست)"""
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM purchases WHERE user_id=%s", (user_id,))
-    r = cur.fetchone()
-    conn.close()
-    return r[0] > 1
-
-
 def get_referral_rewards_history(user_id, limit=20):
     conn = connect()
     cur = conn.cursor()
@@ -774,3 +838,239 @@ def get_referral_rewards_history(user_id, limit=20):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+# ================== PANEL CONFIG ==================
+
+def get_panel_config():
+    """برمی‌گردونه (panel_url, auth_type, username, password, api_key, inbound_id, panel_path)"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT panel_url, auth_type, username, password, api_key, inbound_id, panel_path FROM panel_config WHERE id=1")
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+def update_panel_config(**kwargs):
+    allowed = {"panel_url", "auth_type", "username", "password", "api_key", "inbound_id", "panel_path"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if not fields:
+        return
+    set_clause = ", ".join(f"{k}=%s" for k in fields)
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE panel_config SET {set_clause} WHERE id=1", list(fields.values()))
+    conn.commit()
+    conn.close()
+
+
+# ================== VPN ACCOUNTS ==================
+
+def save_vpn_account(user_id, email, uuid, inbound_id, expire_time, data_limit, purchase_id=None, is_trial=False, sub_id=None, sub_url=None):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO vpn_accounts (user_id, purchase_id, email, uuid, sub_id, sub_url, inbound_id, expire_time, data_limit, is_trial)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (user_id, purchase_id, email, uuid, sub_id, sub_url, inbound_id, expire_time, data_limit, is_trial))
+    vid = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return vid
+
+def get_user_vpn_accounts(user_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT email, uuid, sub_url, inbound_id, expire_time, data_limit, created_at, is_trial
+        FROM vpn_accounts WHERE user_id=%s ORDER BY created_at DESC
+    """, (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# ================== PARTNERS ==================
+
+def is_partner(user_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM partners WHERE user_id=%s AND status='active'", (user_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r is not None
+
+def add_partner(user_id, phone=None, description=None):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO partners (user_id, phone, description)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (user_id) DO UPDATE SET status='active', phone=EXCLUDED.phone, description=EXCLUDED.description
+    """, (user_id, phone, description))
+    conn.commit()
+    conn.close()
+
+def remove_partner(user_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE partners SET status='inactive' WHERE user_id=%s", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_all_partners():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, user_id, phone, description, status, added_at FROM partners ORDER BY added_at DESC")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_partner(user_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, user_id, phone, description, status, added_at FROM partners WHERE user_id=%s", (user_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+
+# ================== PARTNER REQUESTS ==================
+
+def create_partner_request(user_id, phone, description):
+    conn = connect()
+    cur = conn.cursor()
+    # اگه قبلاً pending داشت، آپدیت کن
+    cur.execute("""
+        INSERT INTO partner_requests (user_id, phone, description, status)
+        VALUES (%s, %s, %s, 'pending')
+        ON CONFLICT DO NOTHING
+    """, (user_id, phone, description))
+    conn.commit()
+    conn.close()
+
+def get_pending_partner_requests():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, user_id, phone, description, created_at
+        FROM partner_requests WHERE status='pending' ORDER BY created_at
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def update_partner_request_status(req_id, status):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE partner_requests SET status=%s WHERE id=%s", (status, req_id))
+    conn.commit()
+    conn.close()
+
+def get_partner_request(req_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, user_id, phone, description FROM partner_requests WHERE id=%s", (req_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+def has_pending_request(user_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM partner_requests WHERE user_id=%s AND status='pending'", (user_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r is not None
+
+
+# ================== CATEGORY VISIBILITY ==================
+
+def set_category_visibility(cat_id, visibility):
+    """visibility: 'all' یا 'partners'"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE categories SET visibility=%s WHERE id=%s", (visibility, cat_id))
+    conn.commit()
+    conn.close()
+
+def get_categories_for_user(is_partner_user: bool):
+    """دسته‌بندی‌های قابل نمایش برای کاربر"""
+    conn = connect()
+    cur = conn.cursor()
+    if is_partner_user:
+        cur.execute("""
+            SELECT id, name, emoji FROM categories
+            WHERE is_active=TRUE ORDER BY sort_order, id
+        """)
+    else:
+        cur.execute("""
+            SELECT id, name, emoji FROM categories
+            WHERE is_active=TRUE AND (visibility='all' OR visibility IS NULL)
+            ORDER BY sort_order, id
+        """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# ================== BROADCAST ==================
+
+def get_all_user_ids():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT telegram_id FROM users")
+    rows = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+def get_partner_user_ids():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM partners WHERE status='active'")
+    rows = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+# ================== LICENSE ==================
+
+def get_license_key() -> str | None:
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT license_key FROM license_info WHERE id=1")
+    r = cur.fetchone()
+    conn.close()
+    return r[0] if r else None
+
+def save_license_key(key: str):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE license_info SET license_key=%s, activated_at=NOW(), last_checked=NOW()
+        WHERE id=1
+    """, (key,))
+    conn.commit()
+    conn.close()
+
+def update_license_checked():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE license_info SET last_checked=NOW() WHERE id=1")
+    conn.commit()
+    conn.close()
+
+def get_category_count() -> int:
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM categories WHERE is_active=TRUE")
+    r = cur.fetchone()
+    conn.close()
+    return r[0] if r else 0
+
+def get_service_count() -> int:
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM services WHERE is_active=TRUE")
+    r = cur.fetchone()
+    conn.close()
+    return r[0] if r else 0

@@ -2,14 +2,16 @@ from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from db import (
+from db_final import (
     get_all_categories, get_category, get_services_by_category, get_service,
     get_balance, deduct_balance, create_purchase,
     get_discount_code, use_discount_code,
     get_user, get_referral_config, give_referral_reward,
-    has_previous_purchase,
+    has_previous_purchase, save_vpn_account,
+    is_partner, get_categories_for_user,
     connect as db_connect
 )
+from panel import create_vpn_account
 from keyboards import get_kb, categories_kb, services_kb, invoice_kb, back_kb
 from states import ApplyDiscount
 from utils import format_data
@@ -23,7 +25,8 @@ router = Router()
 
 @router.message(F.text == "🛒 خرید سرویس")
 async def shop_start(message: types.Message):
-    categories = get_all_categories(active_only=True)
+    partner = is_partner(message.from_user.id)
+    categories = get_categories_for_user(partner)
     if not categories:
         await message.answer("❌ در حال حاضر دسته‌بندی‌ای وجود نداره.")
         return
@@ -36,7 +39,8 @@ async def shop_start(message: types.Message):
 
 @router.callback_query(F.data == "shop:back")
 async def shop_back_to_categories(call: types.CallbackQuery):
-    categories = get_all_categories(active_only=True)
+    partner = is_partner(call.from_user.id)
+    categories = get_categories_for_user(partner)
     bal = get_balance(call.from_user.id)
     await call.message.edit_text(
         f"🛒 فروشگاه\n💰 موجودی شما: {bal:,} تومان\n\nیه دسته‌بندی انتخاب کن:",
@@ -227,7 +231,8 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
         f"{format_data(data_gb)}\n{sep}\n"
         f"💰 پرداخت شد:  {final_price:,} تومان\n"
         f"👛 موجودی:       {new_bal:,} تومان\n{sep}\n"
-        f"🔑 شماره سفارش: #{purchase_id}"
+        f"🔑 شماره سفارش: #{purchase_id}\n\n"
+        f"⏳ در حال ساخت اکانت VPN..."
     )
     from config import ADMIN_ID
     username = call.from_user.username or "ندارد"
@@ -239,7 +244,72 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
         f"💰 مبلغ پرداختی: {final_price:,} تومان\n"
         f"🔑 سفارش: #{purchase_id}"
     )
+    await _create_and_send_vpn(bot, user_id, purchase_id, service)
     await call.answer("✅ خرید موفق!")
+
+
+import io
+import qrcode
+
+
+def _make_qr(data: str) -> io.BytesIO:
+    qr = qrcode.QRCode(box_size=10, border=4)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tuple, is_trial: bool = False):
+    """ساخت اکانت VPN و ارسال لینک سابسکریپشن + QR Code به کاربر"""
+    sid, name, desc, price, days, data_gb, is_active, cat_name = service
+    import time
+    email = f"user{user_id}_{int(time.time())}"
+
+    result = await create_vpn_account(user_id, email, days, float(data_gb))
+
+    if result:
+        save_vpn_account(
+            user_id=user_id,
+            email=result["email"],
+            uuid=result["uuid"],
+            inbound_id=result["inbound_id"],
+            expire_time=result["expire_time"],
+            data_limit=result["data_limit"],
+            purchase_id=purchase_id,
+            is_trial=is_trial,
+            sub_id=result.get("sub_id"),
+            sub_url=result.get("sub_url")
+        )
+        import datetime
+        expire_date = datetime.datetime.fromtimestamp(result["expire_time"] / 1000).strftime('%Y-%m-%d')
+        sep = "─" * 22
+        caption = (
+            f"✅ اکانت VPN شما آماده شد!\n{sep}\n"
+            f"🔗 لینک سابسکریپشن:\n"
+            f"`{result['sub_url']}`\n"
+            f"{sep}\n"
+            f"📅 انقضا: {expire_date}\n"
+            f"{format_data(data_gb)}\n{sep}\n"
+            f"⚙️ این لینک رو داخل نرم‌افزار VPN خودت وارد کن."
+        )
+        qr_buf = _make_qr(result["sub_url"])
+        from aiogram.types import BufferedInputFile
+        await bot.send_photo(
+            user_id,
+            photo=BufferedInputFile(qr_buf.read(), filename="vpn_qr.png"),
+            caption=caption,
+            parse_mode="Markdown"
+        )
+    else:
+        await bot.send_message(
+            user_id,
+            "⚠️ خریدت ثبت شد ولی ساخت اکانت VPN با مشکل مواجه شد.\n"
+            "ادمین به زودی اکانتت رو می‌سازه."
+        )
 
 
 @router.callback_query(F.data.startswith("confirm_buy:"))
@@ -269,7 +339,8 @@ async def confirm_buy(call: types.CallbackQuery, bot: Bot):
         f"{format_data(data_gb)}\n{sep}\n"
         f"💰 پرداخت شد:  {price:,} تومان\n"
         f"👛 موجودی:       {new_bal:,} تومان\n{sep}\n"
-        f"🔑 شماره سفارش: #{purchase_id}"
+        f"🔑 شماره سفارش: #{purchase_id}\n\n"
+        f"⏳ در حال ساخت اکانت VPN..."
     )
     username = call.from_user.username or "ندارد"
     await bot.send_message(
@@ -280,6 +351,7 @@ async def confirm_buy(call: types.CallbackQuery, bot: Bot):
         f"💰 مبلغ: {price:,} تومان\n"
         f"🔑 سفارش: #{purchase_id}"
     )
+    await _create_and_send_vpn(bot, user_id, purchase_id, service)
     await call.answer("✅ خرید موفق!")
 
 

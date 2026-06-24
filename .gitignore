@@ -1,6 +1,9 @@
-# Environment
+# محیط
 .env
 *.env
+.env.*
+!.env.example
+!.env.customer
 
 # Python
 __pycache__/
@@ -18,6 +21,7 @@ env/
 .vscode/
 .idea/
 *.swp
+*.swo
 
 # Logs
 *.log
@@ -25,4 +29,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
-git_comand.txt
+
+# فایل ساخت لایسنس — فقط برای خودت، به مشتری نده
+generate_license.py

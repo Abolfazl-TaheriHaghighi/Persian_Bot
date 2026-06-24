@@ -2,8 +2,8 @@ from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import ADMIN_ID
-from db import (
+from config import ADMIN_ID, is_admin
+from db_final import (
     get_all_users, get_pending_transactions, get_all_purchases,
     get_all_categories, get_category, add_category, toggle_category, delete_category,
     get_all_services, get_service, add_service, toggle_service, hard_delete_service, update_service,
@@ -12,6 +12,7 @@ from db import (
     get_trial_config, update_trial_config,
     get_all_phone_overrides, set_phone_max_uses, delete_phone_override, get_all_trial_uses,
     get_referral_config, update_referral_config,
+    get_all_channels, add_channel, delete_channel, toggle_channel,
     connect as db_connect
 )
 from keyboards import (
@@ -23,9 +24,12 @@ from keyboards import (
 from states import (
     AdminAddCategory, AdminAddService, AdminEditService,
     AdminEditBalance, AdminDiscountCode,
-    AdminTrialConfig, AdminPhoneOverride, AdminReferralConfig
+    AdminTrialConfig, AdminPhoneOverride, AdminReferralConfig,
+    AdminAddChannel
 )
-from utils import format_data, data_label_short, normalize_phone
+from pro_guard import (
+    require_pro, check_free_category_limit, check_free_service_limit
+)
 
 router = Router()
 
@@ -36,14 +40,14 @@ router = Router()
 
 @router.message(F.text == "🛠 پنل ادمین")
 async def admin_panel(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(message.from_user.id):
         return
     await message.answer("🛠 پنل مدیریت:", reply_markup=admin_panel_kb())
 
 
 @router.callback_query(F.data == "admin:back")
 async def admin_back(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     await call.message.edit_text("🛠 پنل مدیریت:", reply_markup=admin_panel_kb())
     await call.answer()
@@ -51,7 +55,7 @@ async def admin_back(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:users")
 async def admin_users(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     users = get_all_users()
     text = f"👥 تعداد کاربران: {len(users)}\n\n"
@@ -63,7 +67,7 @@ async def admin_users(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:pending")
 async def admin_pending(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     txs = get_pending_transactions()
     if not txs:
@@ -79,7 +83,7 @@ async def admin_pending(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:purchases")
 async def admin_purchases(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     purchases = get_all_purchases()
     if not purchases:
@@ -99,7 +103,7 @@ async def admin_purchases(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:categories")
 async def admin_categories(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     cats = get_all_categories(active_only=False)
     if not cats:
@@ -114,7 +118,7 @@ async def admin_categories(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:toggle_cat:"))
 async def admin_toggle_cat(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     cat_id = int(call.data.split(":")[2])
     new_status = toggle_category(cat_id)
@@ -125,7 +129,7 @@ async def admin_toggle_cat(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:del_cat:"))
 async def admin_del_cat(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     cat_id = int(call.data.split(":")[2])
     delete_category(cat_id)
@@ -139,7 +143,9 @@ async def admin_del_cat(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:add_category")
 async def admin_add_cat_start(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
+        return
+    if not await check_free_category_limit(call):
         return
     await state.set_state(AdminAddCategory.name)
     await call.message.answer("🗂 نام دسته‌بندی رو وارد کن:")
@@ -171,7 +177,7 @@ async def admin_add_cat_emoji(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin:services")
 async def admin_services_list(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     services = get_all_services(active_only=False)
     if not services:
@@ -186,7 +192,7 @@ async def admin_services_list(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:svc_detail:"))
 async def admin_svc_detail(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     sid = int(call.data.split(":")[2])
     service = get_service(sid)
@@ -211,7 +217,7 @@ async def admin_svc_detail(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:toggle:"))
 async def admin_toggle_service(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     sid = int(call.data.split(":")[2])
     new_status = toggle_service(sid)
@@ -231,7 +237,7 @@ async def admin_toggle_service(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:hard_del:"))
 async def admin_hard_del_service(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     sid = int(call.data.split(":")[2])
     hard_delete_service(sid)
@@ -247,7 +253,7 @@ async def admin_hard_del_service(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:edit_svc:"))
 async def admin_edit_svc(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     sid = int(call.data.split(":")[2])
     await state.set_state(AdminEditService.choosing_field)
@@ -314,7 +320,9 @@ async def admin_save_edit(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin:add_service")
 async def admin_add_service_start(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
+        return
+    if not await check_free_service_limit(call):
         return
     cats = get_all_categories(active_only=True)
     buttons = [[InlineKeyboardButton(text=f"{c[2]} {c[1]}", callback_data=f"admin:svc_cat:{c[0]}")] for c in cats]
@@ -394,7 +402,9 @@ async def admin_add_svc_data(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin:discounts")
 async def admin_discounts(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
+        return
+    if not await require_pro(call, "کد تخفیف"):
         return
     codes = get_all_discount_codes()
     text = "🎁 کدهای تخفیف:\n(برای حذف روی کد کلیک کن)\n\n"
@@ -406,7 +416,7 @@ async def admin_discounts(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:add_discount")
 async def admin_add_discount_start(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     await state.set_state(AdminDiscountCode.code)
     await call.message.answer("🎁 کد تخفیف رو وارد کن (مثلاً GIFT20):")
@@ -475,7 +485,7 @@ async def admin_discount_max_uses(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("admin:del_discount:"))
 async def admin_del_discount(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     dc_id = int(call.data.split(":")[2])
     delete_discount_code(dc_id)
@@ -493,7 +503,7 @@ async def admin_del_discount(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:edit_balance")
 async def admin_edit_balance_start(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     await state.set_state(AdminEditBalance.user_id)
     await call.message.answer("👤 آی‌دی کاربر رو وارد کن:")
@@ -569,7 +579,7 @@ async def admin_edit_balance_amount(message: types.Message, state: FSMContext, b
 
 @router.callback_query(F.data == "admin:trial_menu")
 async def admin_trial_menu(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb())
     await call.answer()
@@ -577,7 +587,7 @@ async def admin_trial_menu(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:trial_toggle")
 async def admin_trial_toggle(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     cfg = get_trial_config()
     new_val = not cfg[0]
@@ -588,7 +598,7 @@ async def admin_trial_toggle(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:trial_toggle_ref")
 async def admin_trial_toggle_ref(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     cfg = get_trial_config()
     new_val = not cfg[3]
@@ -599,7 +609,7 @@ async def admin_trial_toggle_ref(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:trial_set:"))
 async def admin_trial_set_field(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     field = call.data.split(":")[2]
     await state.set_state(AdminTrialConfig.entering_value)
@@ -639,7 +649,7 @@ async def admin_trial_save_field(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin:trial_phones")
 async def admin_trial_phones(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     overrides = get_all_phone_overrides()
     cfg = get_trial_config()
@@ -664,7 +674,7 @@ async def admin_trial_phones(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:trial_add_phone")
 async def admin_trial_add_phone_start(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     await state.set_state(AdminPhoneOverride.phone)
     await call.message.answer("📱 شماره تلفن رو وارد کن (مثلاً 09123456789):")
@@ -711,7 +721,7 @@ async def admin_trial_phone_max_uses(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin:trial_del_phone")
 async def admin_trial_del_phone_start(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     await state.set_state(AdminPhoneOverride.phone)
     await state.update_data(override_mode="delete")
@@ -721,7 +731,7 @@ async def admin_trial_del_phone_start(call: types.CallbackQuery, state: FSMConte
 
 @router.callback_query(F.data == "admin:trial_uses")
 async def admin_trial_uses(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     uses = get_all_trial_uses()
     if not uses:
@@ -740,7 +750,9 @@ async def admin_trial_uses(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:referral_menu")
 async def admin_referral_menu(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
+        return
+    if not await require_pro(call, "رفرال"):
         return
     await call.message.edit_text("🔗 تنظیمات سیستم رفرال:", reply_markup=admin_referral_menu_kb())
     await call.answer()
@@ -748,7 +760,7 @@ async def admin_referral_menu(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "admin:ref_toggle")
 async def admin_ref_toggle(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     cfg = get_referral_config()
     new_val = not cfg[0]
@@ -759,7 +771,7 @@ async def admin_ref_toggle(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:ref_set:"))
 async def admin_ref_set_field(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     field = call.data.split(":")[2]
     await state.set_state(AdminReferralConfig.entering_value)
@@ -801,7 +813,7 @@ async def admin_ref_save_field(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin:ref_history")
 async def admin_ref_history(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return
     conn = db_connect()
     cur = conn.cursor()
@@ -821,3 +833,458 @@ async def admin_ref_history(call: types.CallbackQuery):
             text += f"👤{referrer}→{referred} | {type_label} | +{amount:,}T | {created_at.strftime('%m-%d %H:%M')}\n"
     await call.message.edit_text(text, reply_markup=back_kb("admin:referral_menu"))
     await call.answer()
+
+
+# ================================================================
+# CHANNEL MANAGEMENT
+# ================================================================
+
+def channels_kb(channels):
+    buttons = []
+    for ch in channels:
+        ch_id, channel_id, username, title, invite_link, is_active = ch
+        st = "✅" if is_active else "❌"
+        buttons.append([
+            InlineKeyboardButton(text=f"{st} {title}", callback_data=f"admin:ch_toggle:{ch_id}"),
+            InlineKeyboardButton(text="🗑", callback_data=f"admin:ch_del:{ch_id}"),
+        ])
+    buttons.append([InlineKeyboardButton(text="➕ افزودن کانال", callback_data="admin:ch_add")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.callback_query(F.data == "admin:channels")
+async def admin_channels(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    if not await require_pro(call, "جوین اجباری"):
+        return
+    channels = get_all_channels()
+    text = "📢 کانال‌های اجباری:\n✅=فعال | ❌=غیرفعال\n\n"
+    if not channels:
+        text += "هیچ کانالی ثبت نشده."
+    await call.message.edit_text(text, reply_markup=channels_kb(channels))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:ch_toggle:"))
+async def admin_ch_toggle(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    ch_id = int(call.data.split(":")[2])
+    new_status = toggle_channel(ch_id)
+    await call.answer("✅ فعال شد" if new_status else "❌ غیرفعال شد", show_alert=True)
+    channels = get_all_channels()
+    await call.message.edit_text(
+        "📢 کانال‌های اجباری:\n✅=فعال | ❌=غیرفعال\n\n",
+        reply_markup=channels_kb(channels)
+    )
+
+
+@router.callback_query(F.data.startswith("admin:ch_del:"))
+async def admin_ch_del(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    ch_id = int(call.data.split(":")[2])
+    delete_channel(ch_id)
+    await call.answer("🗑 کانال حذف شد", show_alert=True)
+    channels = get_all_channels()
+    text = "📢 کانال‌های اجباری:\n✅=فعال | ❌=غیرفعال\n\n"
+    if not channels:
+        text += "هیچ کانالی ثبت نشده."
+    await call.message.edit_text(text, reply_markup=channels_kb(channels))
+
+
+@router.callback_query(F.data == "admin:ch_add")
+async def admin_ch_add_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminAddChannel.channel_id)
+    await call.message.answer(
+        "📢 آی‌دی یا یوزرنیم کانال رو وارد کن:\n\n"
+        "مثال: @mychannel یا -1001234567890\n\n"
+        "⚠️ ربات باید ادمین کانال باشه!"
+    )
+    await call.answer()
+
+
+@router.message(AdminAddChannel.channel_id)
+async def admin_ch_id_input(message: types.Message, state: FSMContext):
+    raw = message.text.strip()
+    await state.update_data(channel_id=raw)
+
+    # سعی می‌کنیم اطلاعات کانال رو از تلگرام بگیریم
+    try:
+        chat = await message.bot.get_chat(raw)
+        await state.update_data(
+            channel_username=chat.username or "",
+            channel_title=chat.title or raw
+        )
+        await state.set_state(AdminAddChannel.invite_link)
+        await message.answer(
+            f"✅ کانال پیدا شد: {chat.title}\n\n"
+            f"لینک دعوت رو وارد کن (اختیاری، برای کانال‌های پرایوت):\n"
+            f"یا /skip اگه کانال پابلیکه:"
+        )
+    except Exception:
+        await message.answer(
+            "⚠️ نتونستم اطلاعات کانال رو بگیرم (ربات ادمین نیست؟)\n\n"
+            "عنوان کانال رو دستی وارد کن:"
+        )
+        await state.set_state(AdminAddChannel.title)
+
+
+@router.message(AdminAddChannel.title)
+async def admin_ch_title_input(message: types.Message, state: FSMContext):
+    await state.update_data(channel_title=message.text.strip(), channel_username="")
+    await state.set_state(AdminAddChannel.invite_link)
+    await message.answer(
+        "لینک دعوت رو وارد کن:\n"
+        "یا /skip اگه نداری:"
+    )
+
+
+@router.message(AdminAddChannel.invite_link)
+async def admin_ch_invite_input(message: types.Message, state: FSMContext):
+    invite = None if message.text.strip() == "/skip" else message.text.strip()
+    data = await state.get_data()
+    cid = add_channel(
+        data["channel_id"],
+        data.get("channel_username", ""),
+        data.get("channel_title", data["channel_id"]),
+        invite
+    )
+    await state.clear()
+    await message.answer(
+        f"✅ کانال اضافه شد!\n"
+        f"📢 {data.get('channel_title', data['channel_id'])}\n"
+        f"🔑 ID: {cid}",
+        reply_markup=get_kb(message.from_user.id)
+    )
+
+
+# ================================================================
+# PANEL CONFIG MANAGEMENT
+# ================================================================
+
+from states import AdminPanelConfig
+from db import get_panel_config, update_panel_config
+from panel import test_panel_connection, get_inbound_list
+
+
+def panel_config_kb():
+    cfg = get_panel_config()
+    url, auth_type, username, password, api_key, inbound_id, panel_path = cfg or (None,)*7
+    auth_label = "👤 یوزر/پس" if auth_type == "userpass" else "🔑 API Key"
+    connected = "✅" if url else "❌"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{connected} آدرس پنل: {url or 'تنظیم نشده'}", callback_data="admin:panel_set:panel_url")],
+        [InlineKeyboardButton(text=f"🔐 روش اتصال: {auth_label}", callback_data="admin:panel_toggle_auth")],
+        [InlineKeyboardButton(text=f"👤 یوزرنیم: {username or '—'}", callback_data="admin:panel_set:username")],
+        [InlineKeyboardButton(text=f"🔒 پسورد: {'✅ ست شده' if password else '—'}", callback_data="admin:panel_set:password")],
+        [InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data="admin:panel_set:api_key")],
+        [InlineKeyboardButton(text=f"📡 Inbound ID: {inbound_id or '—'}", callback_data="admin:panel_set:inbound_id")],
+        [InlineKeyboardButton(text=f"📂 Panel Path: {panel_path or '/'}", callback_data="admin:panel_set:panel_path")],
+        [InlineKeyboardButton(text="📋 لیست Inbound ها", callback_data="admin:panel_inbounds")],
+        [InlineKeyboardButton(text="🔌 تست اتصال", callback_data="admin:panel_test")],
+        [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
+    ])
+
+
+@router.callback_query(F.data == "admin:panel_config")
+async def admin_panel_config(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    await call.message.edit_text("⚙️ تنظیمات پنل VPN:", reply_markup=panel_config_kb())
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:panel_toggle_auth")
+async def admin_panel_toggle_auth(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cfg = get_panel_config()
+    new_auth = "apikey" if cfg[1] == "userpass" else "userpass"
+    if new_auth == "apikey" and not await require_pro(call, "اتصال با API Key"):
+        return
+    update_panel_config(auth_type=new_auth)
+    await call.answer("🔑 API Key" if new_auth == "apikey" else "👤 یوزر/پس", show_alert=True)
+    await call.message.edit_text("⚙️ تنظیمات پنل VPN:", reply_markup=panel_config_kb())
+
+
+@router.callback_query(F.data.startswith("admin:panel_set:"))
+async def admin_panel_set_field(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    field = call.data.split(":")[2]
+    await state.set_state(AdminPanelConfig.entering_value)
+    await state.update_data(panel_field=field)
+    prompts = {
+        "panel_url":   "🌐 آدرس پنل رو وارد کن:\nمثال: https://1.2.3.4:2053",
+        "username":    "👤 یوزرنیم پنل رو وارد کن:",
+        "password":    "🔒 پسورد پنل رو وارد کن:",
+        "api_key":     "🔑 API Key پنل رو وارد کن:",
+        "inbound_id":  "📡 شماره Inbound ID رو وارد کن (عدد):",
+        "panel_path":  "📂 Panel Path رو وارد کن (پیش‌فرض خالی):\nمثال: /panel یا /skip برای خالی:",
+    }
+    await call.message.answer(prompts.get(field, "مقدار جدید رو وارد کن:"))
+    await call.answer()
+
+
+@router.message(AdminPanelConfig.entering_value)
+async def admin_panel_save_field(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    field = data["panel_field"]
+    raw = message.text.strip()
+
+    if field == "inbound_id":
+        if not raw.isdigit():
+            await message.answer("❌ فقط عدد:")
+            return
+        value = int(raw)
+    elif field == "panel_path":
+        value = "" if raw == "/skip" else raw
+    elif field == "panel_url":
+        value = raw.rstrip("/")
+    else:
+        value = raw
+
+    update_panel_config(**{field: value})
+    await state.clear()
+    await message.answer("✅ ذخیره شد.", reply_markup=get_kb(message.from_user.id))
+
+
+@router.callback_query(F.data == "admin:panel_test")
+async def admin_panel_test(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    await call.message.edit_text("🔌 در حال تست اتصال...")
+    ok, msg = await test_panel_connection()
+    await call.message.edit_text(
+        f"{'✅' if ok else '❌'} {msg}",
+        reply_markup=panel_config_kb()
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:panel_inbounds")
+async def admin_panel_inbounds(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    await call.message.edit_text("📋 در حال دریافت لیست...")
+    inbounds = await get_inbound_list()
+    if not inbounds:
+        await call.message.edit_text(
+            "❌ نتونستم inbound ها رو بگیرم.\nاتصال پنل رو چک کن.",
+            reply_markup=back_kb("admin:panel_config")
+        )
+        await call.answer()
+        return
+
+    text = "📋 لیست Inbound ها:\n\n"
+    for ib in inbounds:
+        text += f"🔹 ID: {ib.get('id')} | {ib.get('remark','—')} | {ib.get('protocol','—')} | پورت: {ib.get('port','—')}\n"
+    text += "\nاز این IDها برای تنظیم Inbound ID استفاده کن."
+    await call.message.edit_text(text, reply_markup=back_kb("admin:panel_config"))
+    await call.answer()
+
+
+# ================================================================
+# PARTNER MANAGEMENT
+# ================================================================
+
+from db import (
+    get_all_partners, get_partner, add_partner, remove_partner,
+    get_all_categories, set_category_visibility
+)
+from states import AdminAddPartnerManual
+
+
+def partners_kb(partners):
+    buttons = []
+    for p in partners:
+        pid, user_id, phone, desc, status, added_at = p
+        st = "✅" if status == "active" else "❌"
+        buttons.append([
+            InlineKeyboardButton(text=f"{st} {user_id} | {phone or '—'}", callback_data=f"admin:partner_detail:{user_id}"),
+        ])
+    buttons.append([InlineKeyboardButton(text="➕ افزودن دستی", callback_data="admin:partner_add")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def partner_detail_kb(user_id, is_active):
+    toggle_text = "❌ غیرفعال کردن" if is_active else "✅ فعال کردن"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"admin:partner_toggle:{user_id}")],
+        [InlineKeyboardButton(text="🔙 برگشت به لیست", callback_data="admin:partners")],
+    ])
+
+
+@router.callback_query(F.data == "admin:partners")
+async def admin_partners(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    if not await require_pro(call, "همکاران"):
+        return
+    partners = get_all_partners()
+    active = sum(1 for p in partners if p[4] == "active")
+    text = f"🤝 همکاران ({active} فعال از {len(partners)}):\n✅=فعال | ❌=غیرفعال\n\n"
+    if not partners:
+        text += "هیچ همکاری ثبت نشده."
+    await call.message.edit_text(text, reply_markup=partners_kb(partners))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:partner_detail:"))
+async def admin_partner_detail(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    user_id = int(call.data.split(":")[2])
+    p = get_partner(user_id)
+    if not p:
+        await call.answer("❌ یافت نشد", show_alert=True)
+        return
+    pid, uid, phone, desc, status, added_at = p
+    sep = "─" * 22
+    text = (
+        f"🤝 جزئیات همکار\n{sep}\n"
+        f"🆔 User ID: {uid}\n"
+        f"📱 شماره: {phone or '—'}\n"
+        f"📝 توضیحات: {desc or '—'}\n"
+        f"🔘 وضعیت: {'✅ فعال' if status == 'active' else '❌ غیرفعال'}\n"
+        f"📅 تاریخ: {added_at.strftime('%Y-%m-%d')}\n"
+    )
+    await call.message.edit_text(text, reply_markup=partner_detail_kb(uid, status == "active"))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:partner_toggle:"))
+async def admin_partner_toggle(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    user_id = int(call.data.split(":")[2])
+    p = get_partner(user_id)
+    if not p:
+        await call.answer("❌ یافت نشد", show_alert=True)
+        return
+    if p[4] == "active":
+        remove_partner(user_id)
+        await call.answer("❌ غیرفعال شد", show_alert=True)
+    else:
+        add_partner(user_id, p[2], p[3])
+        await call.answer("✅ فعال شد", show_alert=True)
+    p = get_partner(user_id)
+    pid, uid, phone, desc, status, added_at = p
+    sep = "─" * 22
+    text = (
+        f"🤝 جزئیات همکار\n{sep}\n"
+        f"🆔 User ID: {uid}\n"
+        f"📱 شماره: {phone or '—'}\n"
+        f"📝 توضیحات: {desc or '—'}\n"
+        f"🔘 وضعیت: {'✅ فعال' if status == 'active' else '❌ غیرفعال'}\n"
+    )
+    await call.message.edit_text(text, reply_markup=partner_detail_kb(uid, status == "active"))
+
+
+@router.callback_query(F.data == "admin:partner_add")
+async def admin_partner_add_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminAddPartnerManual.waiting_user_id)
+    await call.message.answer("👤 آی‌دی عددی کاربر رو وارد کن:")
+    await call.answer()
+
+
+@router.message(AdminAddPartnerManual.waiting_user_id)
+async def admin_partner_add_uid(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ فقط عدد:")
+        return
+    await state.update_data(target_uid=int(message.text))
+    await state.set_state(AdminAddPartnerManual.waiting_phone)
+    await message.answer("📱 شماره موبایل همکار (یا /skip):")
+
+
+@router.message(AdminAddPartnerManual.waiting_phone)
+async def admin_partner_add_phone(message: types.Message, state: FSMContext, bot: Bot):
+    from utils import normalize_phone
+    phone = None if message.text == "/skip" else normalize_phone(message.text)
+    data = await state.get_data()
+    uid = data["target_uid"]
+    add_partner(uid, phone)
+    await state.clear()
+    try:
+        await bot.send_message(
+            uid,
+            "🎉 شما به عنوان همکار اضافه شدید!\n"
+            "✅ حالا به دسته‌بندی‌های ویژه همکاران دسترسی داری."
+        )
+    except Exception:
+        pass
+    await message.answer(
+        f"✅ کاربر {uid} به عنوان همکار اضافه شد.",
+        reply_markup=get_kb(message.from_user.id)
+    )
+
+
+# ================================================================
+# CATEGORY VISIBILITY
+# ================================================================
+
+def category_visibility_kb(categories):
+    buttons = []
+    for c in categories:
+        cid, name, emoji, is_active, sort_order, visibility = c
+        vis_label = "👥 همه" if visibility in ("all", None) else "🤝 فقط همکاران"
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{emoji} {name} | {vis_label}",
+                callback_data=f"admin:cat_vis:{cid}"
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.callback_query(F.data == "admin:cat_visibility")
+async def admin_cat_visibility(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, emoji, is_active, sort_order, visibility FROM categories ORDER BY sort_order, id")
+    cats = cur.fetchall()
+    conn.close()
+    await call.message.edit_text(
+        "👁 دسترسی دسته‌بندی‌ها:\n👥 همه = همه کاربران | 🤝 فقط همکاران\n\n"
+        "برای تغییر کلیک کن:",
+        reply_markup=category_visibility_kb(cats)
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:cat_vis:"))
+async def admin_toggle_cat_visibility(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cat_id = int(call.data.split(":")[2])
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("SELECT visibility FROM categories WHERE id=%s", (cat_id,))
+    r = cur.fetchone()
+    conn.close()
+    current = r[0] if r else "all"
+    new_vis = "partners" if current in ("all", None) else "all"
+    set_category_visibility(cat_id, new_vis)
+    await call.answer("🤝 فقط همکاران" if new_vis == "partners" else "👥 همه", show_alert=True)
+
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, emoji, is_active, sort_order, visibility FROM categories ORDER BY sort_order, id")
+    cats = cur.fetchall()
+    conn.close()
+    await call.message.edit_text(
+        "👁 دسترسی دسته‌بندی‌ها:\n👥 همه = همه کاربران | 🤝 فقط همکاران\n\nبرای تغییر کلیک کن:",
+        reply_markup=category_visibility_kb(cats)
+    )

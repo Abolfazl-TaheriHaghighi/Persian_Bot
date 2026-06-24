@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-from db import (
+from db_final import (
     get_referral_config, get_referral_stats, get_referral_rewards_history,
     get_referrals,
     get_trial_config, get_trial_use_count, get_phone_max_uses,
@@ -115,11 +115,15 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
         f"📱 شماره: {phone}\n"
         f"⏳ مدت: {duration_days} روز\n"
         f"{format_data(data_limit_gb)}\n{sep}\n"
-        f"📩 اطلاعات اتصال به زودی ارسال می‌شه.",
+        f"⏳ در حال ساخت اکانت VPN...",
         reply_markup=get_kb(user_id)
     )
 
     from config import ADMIN_ID
+    from panel import create_vpn_account
+    from db_final import save_vpn_account
+    import time
+
     username = message.from_user.username or "ندارد"
     await message.bot.send_message(
         ADMIN_ID,
@@ -128,6 +132,54 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
         f"📱 شماره: {phone}\n"
         f"⏳ {duration_days} روز | {data_label_short(data_limit_gb)}"
     )
+
+    email = f"trial{user_id}_{int(time.time())}"
+    result = await create_vpn_account(user_id, email, duration_days, float(data_limit_gb))
+
+    if result:
+        save_vpn_account(
+            user_id=user_id,
+            email=result["email"],
+            uuid=result["uuid"],
+            inbound_id=result["inbound_id"],
+            expire_time=result["expire_time"],
+            data_limit=result["data_limit"],
+            is_trial=True,
+            sub_id=result.get("sub_id"),
+            sub_url=result.get("sub_url")
+        )
+        import datetime, io, qrcode as qrcode_lib
+        from aiogram.types import BufferedInputFile
+        expire_date = datetime.datetime.fromtimestamp(result["expire_time"] / 1000).strftime('%Y-%m-%d')
+        sep = "─" * 22
+        caption = (
+            f"✅ اکانت تست VPN آماده شد!\n{sep}\n"
+            f"🔗 لینک سابسکریپشن:\n"
+            f"`{result['sub_url']}`\n"
+            f"{sep}\n"
+            f"📅 انقضا: {expire_date}\n"
+            f"{format_data(data_limit_gb)}\n{sep}\n"
+            f"⚙️ این لینک رو داخل نرم‌افزار VPN خودت وارد کن."
+        )
+        qr = qrcode_lib.QRCode(box_size=10, border=4)
+        qr.add_data(result["sub_url"])
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        await message.bot.send_photo(
+            user_id,
+            photo=BufferedInputFile(buf.read(), filename="vpn_qr.png"),
+            caption=caption,
+            parse_mode="Markdown"
+        )
+    else:
+        await message.bot.send_message(
+            user_id,
+            "⚠️ تست رایگان ثبت شد ولی ساخت اکانت VPN با مشکل مواجه شد.\n"
+            "ادمین به زودی اکانتت رو می‌سازه."
+        )
 
 
 # ================================================================

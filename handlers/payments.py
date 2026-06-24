@@ -2,8 +2,8 @@ from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import ADMIN_ID
-from db import (
+from config import ADMIN_ID, is_admin
+from db_final import (
     create_transaction, approve_transaction, reject_transaction, get_balance
 )
 from keyboards import get_kb
@@ -74,7 +74,7 @@ async def handle_receipt_wrong(message: types.Message):
 
 @router.callback_query(F.data.startswith("approve:"))
 async def approve(call: types.CallbackQuery, bot: Bot):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         await call.answer("❌ دسترسی ندارید", show_alert=True)
         return
     _, tx_id, user_id, amount = call.data.split(":")
@@ -89,7 +89,7 @@ async def approve(call: types.CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data.startswith("reject:"))
 async def reject(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         await call.answer("❌ دسترسی ندارید", show_alert=True)
         return
     _, tx_id, user_id, amount = call.data.split(":")
