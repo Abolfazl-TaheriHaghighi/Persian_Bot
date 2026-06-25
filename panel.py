@@ -1,7 +1,7 @@
 import aiohttp
 import uuid as uuid_lib
 import time
-from db_final import get_panel_config
+from db import get_panel_config
 
 
 class PanelClient:

@@ -6,7 +6,7 @@ helper برای چک کردن دسترسی پرو
 from aiogram import types
 from config import BOT_TOKEN
 from license import is_pro as _is_pro
-from db_final import get_category_count, get_service_count
+from db import get_category_count, get_service_count
 
 # حدود رایگان
 FREE_MAX_CATEGORIES = 1

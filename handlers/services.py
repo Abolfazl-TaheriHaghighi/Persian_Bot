@@ -2,7 +2,7 @@ from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from db_final import (
+from db import (
     get_all_categories, get_category, get_services_by_category, get_service,
     get_balance, deduct_balance, create_purchase,
     get_discount_code, use_discount_code,

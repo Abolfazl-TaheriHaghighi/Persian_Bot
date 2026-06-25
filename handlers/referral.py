@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-from db_final import (
+from db import (
     get_referral_config, get_referral_stats, get_referral_rewards_history,
     get_referrals,
     get_trial_config, get_trial_use_count, get_phone_max_uses,
@@ -121,7 +121,7 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
 
     from config import ADMIN_ID
     from panel import create_vpn_account
-    from db_final import save_vpn_account
+    from db import save_vpn_account
     import time
 
     username = message.from_user.username or "ندارد"
@@ -190,7 +190,7 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
 async def referral_panel(message: types.Message):
     user_id = message.from_user.id
     ref_cfg = get_referral_config()
-    is_enabled, reward_join, reward_purchase, reward_pct = ref_cfg
+    is_enabled, reward_join, first_purchase_reward, reward_purchase, reward_pct = ref_cfg
 
     ref_count, total_reward = get_referral_stats(user_id)
     bot_info = await message.bot.get_me()
@@ -208,11 +208,13 @@ async def referral_panel(message: types.Message):
         text += "🎁 پاداش‌های فعلی:\n"
         if reward_join > 0:
             text += f"  • ثبت‌نام هر نفر: {reward_join:,} تومان\n"
+        if first_purchase_reward > 0:
+            text += f"  • اولین خرید: {first_purchase_reward:,} تومان\n"
         if reward_purchase > 0:
-            text += f"  • خرید هر نفر (ثابت): {reward_purchase:,} تومان\n"
+            text += f"  • خریدهای بعدی (ثابت): {reward_purchase:,} تومان\n"
         if reward_pct > 0:
-            text += f"  • خرید هر نفر (درصدی): {reward_pct}% مبلغ خرید\n"
-        if reward_join == 0 and reward_purchase == 0 and reward_pct == 0:
+            text += f"  • خریدهای بعدی (درصدی): {reward_pct}% مبلغ خرید\n"
+        if reward_join == 0 and first_purchase_reward == 0 and reward_purchase == 0 and reward_pct == 0:
             text += "  • در حال حاضر پاداشی تنظیم نشده.\n"
     else:
         text += "⚠️ سیستم رفرال فعلاً غیرفعاله."

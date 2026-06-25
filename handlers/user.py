@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import ADMIN_ID, is_admin
-from db_final import (
+from db import (
     add_user, get_balance, get_user_purchases,
     get_referral_config, give_referral_reward,
     get_active_channels,
@@ -156,7 +156,7 @@ async def balance(message: types.Message):
 
 @router.message(F.text == "📊 وضعیت سرویس‌ها")
 async def service_status(message: types.Message):
-    from db_final import get_user_vpn_accounts
+    from db import get_user_vpn_accounts
     from panel import get_client_status
     import datetime
 

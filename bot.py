@@ -6,7 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import BOT_TOKEN, ADMIN_ID
-from db_final import init_db, update_license_checked
+from db import init_db, update_license_checked
 from license import check_license_from_db, clear_cache
 
 from handlers import user, payments, services, referral, admin, partner, broadcast

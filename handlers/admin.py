@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import ADMIN_ID, is_admin
-from db_final import (
+from db import (
     get_all_users, get_pending_transactions, get_all_purchases,
     get_all_categories, get_category, add_category, toggle_category, delete_category,
     get_all_services, get_service, add_service, toggle_service, hard_delete_service, update_service,
@@ -13,6 +13,8 @@ from db_final import (
     get_all_phone_overrides, set_phone_max_uses, delete_phone_override, get_all_trial_uses,
     get_referral_config, update_referral_config,
     get_all_channels, add_channel, delete_channel, toggle_channel,
+    get_all_partners, get_partner, add_partner, remove_partner,
+    get_user_purchases,
     connect as db_connect
 )
 from keyboards import (
@@ -25,11 +27,12 @@ from states import (
     AdminAddCategory, AdminAddService, AdminEditService,
     AdminEditBalance, AdminDiscountCode,
     AdminTrialConfig, AdminPhoneOverride, AdminReferralConfig,
-    AdminAddChannel
+    AdminAddChannel, AdminAddPartnerManual
 )
 from pro_guard import (
     require_pro, check_free_category_limit, check_free_service_limit
 )
+from utils import format_data, data_label_short, normalize_phone
 
 router = Router()
 
@@ -663,10 +666,11 @@ async def admin_trial_phones(call: types.CallbackQuery):
     else:
         text += "هیچ override ای ثبت نشده.\n"
     buttons = [
-        [InlineKeyboardButton(text="➕ تنظیم شماره اختصاصی", callback_data="admin:trial_add_phone")],
-        [InlineKeyboardButton(text="🗑 حذف override شماره",   callback_data="admin:trial_del_phone")],
-        [InlineKeyboardButton(text="📋 لیست کامل تست‌ها",    callback_data="admin:trial_uses")],
-        [InlineKeyboardButton(text="🔙 برگشت",                callback_data="admin:trial_menu")],
+        [InlineKeyboardButton(text="➕ تنظیم شماره اختصاصی",   callback_data="admin:trial_add_phone")],
+        [InlineKeyboardButton(text="🗑 حذف override شماره",     callback_data="admin:trial_del_phone")],
+        [InlineKeyboardButton(text="🔄 ریست تاریخچه تست شماره", callback_data="admin:trial_clear_uses")],
+        [InlineKeyboardButton(text="📋 لیست کامل تست‌ها",      callback_data="admin:trial_uses")],
+        [InlineKeyboardButton(text="🔙 برگشت",                  callback_data="admin:trial_menu")],
     ]
     await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await call.answer()
@@ -689,11 +693,24 @@ async def admin_trial_phone_input(message: types.Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    if data.get("override_mode") == "delete":
+    mode = data.get("override_mode")
+
+    if mode == "delete":
         delete_phone_override(phone)
         await state.clear()
         await message.answer(
             f"✅ Override شماره {phone} حذف شد.",
+            reply_markup=get_kb(message.from_user.id)
+        )
+        return
+
+    if mode == "clear_uses":
+        from db import clear_trial_uses
+        clear_trial_uses(phone)
+        await state.clear()
+        await message.answer(
+            f"✅ تاریخچه تست شماره {phone} ریست شد.\n"
+            f"این شماره می‌تونه دوباره تست بگیره.",
             reply_markup=get_kb(message.from_user.id)
         )
         return
@@ -726,6 +743,19 @@ async def admin_trial_del_phone_start(call: types.CallbackQuery, state: FSMConte
     await state.set_state(AdminPhoneOverride.phone)
     await state.update_data(override_mode="delete")
     await call.message.answer("📱 شماره‌ای که می‌خوای override ش رو حذف کنی وارد کن:")
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:trial_clear_uses")
+async def admin_trial_clear_uses_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminPhoneOverride.phone)
+    await state.update_data(override_mode="clear_uses")
+    await call.message.answer(
+        "🔄 شماره‌ای که می‌خوای تاریخچه تستش رو ریست کنی وارد کن:\n"
+        "(بعد از ریست، اون شماره می‌تونه دوباره تست بگیره)"
+    )
     await call.answer()
 
 
@@ -1117,6 +1147,8 @@ def partner_detail_kb(user_id, is_active):
     toggle_text = "❌ غیرفعال کردن" if is_active else "✅ فعال کردن"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_text, callback_data=f"admin:partner_toggle:{user_id}")],
+        [InlineKeyboardButton(text="🛍 آمار خرید", callback_data=f"admin:partner_purchases:{user_id}")],
+        [InlineKeyboardButton(text="🗑 حذف همکار", callback_data=f"admin:partner_delete:{user_id}")],
         [InlineKeyboardButton(text="🔙 برگشت به لیست", callback_data="admin:partners")],
     ])
 
@@ -1146,6 +1178,8 @@ async def admin_partner_detail(call: types.CallbackQuery):
         await call.answer("❌ یافت نشد", show_alert=True)
         return
     pid, uid, phone, desc, status, added_at = p
+    bal = get_balance(uid)
+    purchases = get_user_purchases(uid)
     sep = "─" * 22
     text = (
         f"🤝 جزئیات همکار\n{sep}\n"
@@ -1153,10 +1187,52 @@ async def admin_partner_detail(call: types.CallbackQuery):
         f"📱 شماره: {phone or '—'}\n"
         f"📝 توضیحات: {desc or '—'}\n"
         f"🔘 وضعیت: {'✅ فعال' if status == 'active' else '❌ غیرفعال'}\n"
-        f"📅 تاریخ: {added_at.strftime('%Y-%m-%d')}\n"
+        f"💰 موجودی: {bal:,} تومان\n"
+        f"🛍 تعداد خرید: {len(purchases)}\n"
+        f"📅 تاریخ عضویت: {added_at.strftime('%Y-%m-%d')}\n"
     )
     await call.message.edit_text(text, reply_markup=partner_detail_kb(uid, status == "active"))
     await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:partner_purchases:"))
+async def admin_partner_purchases(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    user_id = int(call.data.split(":")[2])
+    purchases = get_user_purchases(user_id)
+    if not purchases:
+        await call.answer("هنوز خریدی نداشته", show_alert=True)
+        return
+    sep = "─" * 22
+    text = f"🛍 خریدهای همکار {user_id}\n{sep}\n"
+    total = 0
+    for p in purchases:
+        sname, amt, pat = p
+        text += f"📦 {sname} | {amt:,}T | {pat.strftime('%Y-%m-%d')}\n"
+        total += amt
+    text += f"{sep}\n💰 مجموع: {total:,} تومان"
+    await call.message.edit_text(text, reply_markup=back_kb(f"admin:partner_detail:{user_id}"))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:partner_delete:"))
+async def admin_partner_delete(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    user_id = int(call.data.split(":")[2])
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM partners WHERE user_id=%s", (user_id,))
+    conn.commit()
+    conn.close()
+    await call.answer("🗑 همکار حذف شد", show_alert=True)
+    partners = get_all_partners()
+    active = sum(1 for p in partners if p[4] == "active")
+    text = f"🤝 همکاران ({active} فعال از {len(partners)}):\n\n"
+    if not partners:
+        text += "هیچ همکاری ثبت نشده."
+    await call.message.edit_text(text, reply_markup=partners_kb(partners))
 
 
 @router.callback_query(F.data.startswith("admin:partner_toggle:"))
@@ -1232,14 +1308,29 @@ async def admin_partner_add_phone(message: types.Message, state: FSMContext, bot
 # CATEGORY VISIBILITY
 # ================================================================
 
+def _vis_label(v):
+    if v == "partners":
+        return "🤝 همکاران"
+    if v == "users":
+        return "👤 کاربران عادی"
+    return "👥 همه"
+
+def _vis_next(v):
+    # چرخش: all → partners → users → all
+    if v in ("all", None):
+        return "partners"
+    if v == "partners":
+        return "users"
+    return "all"
+
+
 def category_visibility_kb(categories):
     buttons = []
     for c in categories:
         cid, name, emoji, is_active, sort_order, visibility = c
-        vis_label = "👥 همه" if visibility in ("all", None) else "🤝 فقط همکاران"
         buttons.append([
             InlineKeyboardButton(
-                text=f"{emoji} {name} | {vis_label}",
+                text=f"{emoji} {name} | {_vis_label(visibility)}",
                 callback_data=f"admin:cat_vis:{cid}"
             )
         ])
@@ -1247,18 +1338,24 @@ def category_visibility_kb(categories):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-@router.callback_query(F.data == "admin:cat_visibility")
-async def admin_cat_visibility(call: types.CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return
+def _get_cats_for_vis():
     conn = db_connect()
     cur = conn.cursor()
     cur.execute("SELECT id, name, emoji, is_active, sort_order, visibility FROM categories ORDER BY sort_order, id")
     cats = cur.fetchall()
     conn.close()
+    return cats
+
+
+@router.callback_query(F.data == "admin:cat_visibility")
+async def admin_cat_visibility(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cats = _get_cats_for_vis()
     await call.message.edit_text(
-        "👁 دسترسی دسته‌بندی‌ها:\n👥 همه = همه کاربران | 🤝 فقط همکاران\n\n"
-        "برای تغییر کلیک کن:",
+        "👁 دسترسی دسته‌بندی‌ها:\n"
+        "👥 همه | 🤝 همکاران | 👤 کاربران عادی\n"
+        "کلیک کن تا بچرخونیش:",
         reply_markup=category_visibility_kb(cats)
     )
     await call.answer()
@@ -1275,16 +1372,14 @@ async def admin_toggle_cat_visibility(call: types.CallbackQuery):
     r = cur.fetchone()
     conn.close()
     current = r[0] if r else "all"
-    new_vis = "partners" if current in ("all", None) else "all"
+    new_vis = _vis_next(current)
+    from db import set_category_visibility
     set_category_visibility(cat_id, new_vis)
-    await call.answer("🤝 فقط همکاران" if new_vis == "partners" else "👥 همه", show_alert=True)
-
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id, name, emoji, is_active, sort_order, visibility FROM categories ORDER BY sort_order, id")
-    cats = cur.fetchall()
-    conn.close()
+    await call.answer(_vis_label(new_vis), show_alert=True)
+    cats = _get_cats_for_vis()
     await call.message.edit_text(
-        "👁 دسترسی دسته‌بندی‌ها:\n👥 همه = همه کاربران | 🤝 فقط همکاران\n\nبرای تغییر کلیک کن:",
+        "👁 دسترسی دسته‌بندی‌ها:\n"
+        "👥 همه | 🤝 همکاران | 👤 کاربران عادی\n"
+        "کلیک کن تا بچرخونیش:",
         reply_markup=category_visibility_kb(cats)
     )

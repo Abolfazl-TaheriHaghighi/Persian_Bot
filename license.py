@@ -80,7 +80,7 @@ def check_license_from_db(bot_token: str) -> dict:
     if _auth(_ev(_H2)):
         return {"valid": True, "is_pro": True, "expire_date": None,
                 "days_left": None, "error": None, "permanent": True}
-    from db_final import get_license_key
+    from db import get_license_key
     key = get_license_key()
     if not key:
         return {"valid": False, "is_pro": False, "expire_date": None,

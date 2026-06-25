@@ -5,7 +5,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import ADMIN_ID, BOT_TOKEN, MASTER_KEY, is_admin
-from db_final import save_license_key, get_license_key
+from db import save_license_key, get_license_key
 from license import verify_license, check_license_from_db, clear_cache, generate_license, get_instance_id
 from keyboards import get_kb
 

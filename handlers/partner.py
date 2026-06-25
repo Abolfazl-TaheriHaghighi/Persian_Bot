@@ -6,10 +6,10 @@ from aiogram.types import (
 )
 
 from config import ADMIN_ID, is_admin
-from db_final import (
+from db import (
     is_partner, has_pending_request, create_partner_request,
-    get_partner, add_partner, update_partner_request_status,
-    get_partner_request
+    get_partner, add_partner, remove_partner,
+    get_all_partners
 )
 from keyboards import get_kb
 from states import PartnerRequest, AdminPartnerApprove, AdminPartnerReject
@@ -41,8 +41,7 @@ async def partner_request_start(message: types.Message, state: FSMContext):
         one_time_keyboard=True
     )
     await message.answer(
-        "🤝 درخواست همکاری\n\n"
-        "ابتدا شماره موبایلت رو تایید کن:",
+        "🤝 درخواست همکاری\n\nابتدا شماره موبایلت رو تایید کن:",
         reply_markup=kb
     )
 
@@ -74,12 +73,24 @@ async def partner_phone_text(message: types.Message, state: FSMContext):
     )
 
 
+# هر نوع محتوایی رو به عنوان توضیحات قبول کن (متن، عکس، ویس و...)
 @router.message(PartnerRequest.waiting_description)
 async def partner_description(message: types.Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     phone = data["phone"]
-    description = message.text.strip()
     user_id = message.from_user.id
+
+    # خلاصه توضیحات برای دیتابیس
+    if message.text:
+        description = message.text.strip()
+    elif message.photo:
+        description = f"[عکس] {message.caption or ''}"
+    elif message.voice:
+        description = "[ویس]"
+    elif message.video:
+        description = f"[ویدیو] {message.caption or ''}"
+    else:
+        description = "[فایل]"
 
     create_partner_request(user_id, phone, description)
     await state.clear()
@@ -90,23 +101,29 @@ async def partner_description(message: types.Message, state: FSMContext, bot: Bo
         reply_markup=get_kb(user_id)
     )
 
+    # فوروارد پیام کاربر به ادمین
     username = message.from_user.username or "ندارد"
-    await bot.send_message(
-        ADMIN_ID,
+    header = (
         f"🤝 درخواست همکاری جدید!\n"
         f"{'─'*22}\n"
         f"👤 User ID: {user_id}\n"
         f"🔖 Username: @{username}\n"
         f"📱 شماره: {phone}\n"
-        f"📝 توضیحات:\n{description}\n"
-        f"{'─'*22}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ تایید", callback_data=f"partner:approve:{user_id}:{phone}"),
-                InlineKeyboardButton(text="❌ رد",    callback_data=f"partner:reject:{user_id}"),
-            ]
-        ])
+        f"{'─'*22}\n"
+        f"📝 توضیحات:"
     )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ تایید", callback_data=f"partner:approve:{user_id}:{phone}"),
+            InlineKeyboardButton(text="❌ رد",    callback_data=f"partner:reject:{user_id}"),
+        ]
+    ])
+
+    await bot.send_message(ADMIN_ID, header)
+    # فوروارد خود پیام کاربر
+    await bot.forward_message(chat_id=ADMIN_ID, from_chat_id=message.chat.id, message_id=message.message_id)
+    # ارسال دکمه‌ها
+    await bot.send_message(ADMIN_ID, "انتخاب کن:", reply_markup=kb)
 
 
 # ================================================================
@@ -137,20 +154,21 @@ async def partner_approve_confirm(message: types.Message, state: FSMContext, bot
 
     custom_msg = None if message.text == "/skip" else message.text.strip()
     add_partner(target_user_id, phone)
-
-    user_text = custom_msg or (
-        "🎉 تبریک! درخواست همکاری شما تایید شد.\n"
-        "✅ حالا به دسته‌بندی‌های ویژه همکاران دسترسی داری."
-    )
     await state.clear()
 
+    # پیام پایه همیشه میره
+    base_text = "🎉 تبریک! درخواست همکاری شما تایید شد.\n✅ حالا به دسته‌بندی‌های ویژه همکاران دسترسی داری."
+    # اگه پیام اضافه داشت، زیرش میاد
+    full_text = base_text + (f"\n\n💬 پیام ادمین:\n{custom_msg}" if custom_msg else "")
+
     try:
-        await bot.send_message(target_user_id, user_text)
+        await bot.send_message(target_user_id, full_text)
+        notif = "✅ پیام به کاربر ارسال شد"
     except Exception:
-        pass
+        notif = "⚠️ کاربر ربات رو بلاک کرده"
 
     await message.answer(
-        f"✅ کاربر {target_user_id} به عنوان همکار تایید شد.",
+        f"✅ کاربر {target_user_id} به عنوان همکار تایید شد.\n{notif}",
         reply_markup=get_kb(message.from_user.id)
     )
 
@@ -181,10 +199,11 @@ async def partner_reject_confirm(message: types.Message, state: FSMContext, bot:
 
     try:
         await bot.send_message(target_user_id, user_text)
+        notif = "✅ پیام به کاربر ارسال شد"
     except Exception:
-        pass
+        notif = "⚠️ کاربر ربات رو بلاک کرده"
 
     await message.answer(
-        f"✅ رد درخواست کاربر {target_user_id} انجام شد.",
+        f"✅ رد درخواست کاربر {target_user_id} انجام شد.\n{notif}",
         reply_markup=get_kb(message.from_user.id)
     )

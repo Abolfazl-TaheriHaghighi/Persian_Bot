@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import ADMIN_ID, is_admin
-from db_final import get_all_user_ids, get_partner_user_ids
+from db import get_all_user_ids, get_partner_user_ids
 from keyboards import get_kb
 from states import AdminBroadcast
 

@@ -3,7 +3,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from config import ADMIN_ID, is_admin
-from db_final import get_trial_config, get_referral_config
+from db import get_trial_config, get_referral_config
 
 
 def get_kb(user_id):

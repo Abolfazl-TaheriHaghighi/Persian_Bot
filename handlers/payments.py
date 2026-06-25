@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import ADMIN_ID, is_admin
-from db_final import (
+from db import (
     create_transaction, approve_transaction, reject_transaction, get_balance
 )
 from keyboards import get_kb
