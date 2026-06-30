@@ -97,3 +97,33 @@ class AdminBroadcast(StatesGroup):
     choosing_target = State()
     waiting_message = State()
     waiting_custom_ids = State()
+
+
+# ---- پلن دلخواه: کاربر ----
+class CustomPlanOrder(StatesGroup):
+    waiting_gb = State()
+    waiting_days = State()
+    waiting_discount = State()
+
+
+# ---- پلن دلخواه: ادمین ----
+class AdminCustomCategory(StatesGroup):
+    name = State()
+
+
+class AdminAddCustomGroup(StatesGroup):
+    name = State()
+    emoji = State()
+
+
+class AdminEditCustomGroup(StatesGroup):
+    choosing_field = State()
+    entering_value = State()
+
+
+class AdminCustomAccessAdd(StatesGroup):
+    waiting_input = State()
+
+
+class AdminCustomAccessRemove(StatesGroup):
+    waiting_input = State()

@@ -1,3 +1,21 @@
+import asyncio
+from config import ADMIN_IDS
+
+
+async def run_db(fn, *args, **kwargs):
+    """اجرای توابع دیتابیس در thread جداگانه تا event loop بلاک نشه"""
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+async def notify_admins(bot, text: str, **kwargs):
+    """ارسال پیام به همه ادمین‌ها"""
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, **kwargs)
+        except Exception:
+            pass
+
+
 def format_data(gb) -> str:
     if float(gb) == 0:
         return "♾ نامحدود"

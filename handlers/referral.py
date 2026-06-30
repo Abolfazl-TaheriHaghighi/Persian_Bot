@@ -1,18 +1,22 @@
-from aiogram import Router, types, F
+from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 
+from config import ADMIN_ID
 from db import (
     get_referral_config, get_referral_stats, get_referral_rewards_history,
     get_referrals,
     get_trial_config, get_trial_use_count, get_phone_max_uses,
     get_referral_count, get_user,
-    set_user_phone, record_trial_use
+    set_user_phone, record_trial_use,
+    save_vpn_account
 )
 from keyboards import get_kb, back_kb
 from states import FreeTrial
-from utils import format_data, data_label_short, normalize_phone
+from utils import format_data, data_label_short, normalize_phone, run_db,notify_admins
 
 router = Router()
 
@@ -23,7 +27,7 @@ router = Router()
 
 @router.message(F.text == "🎁 تست رایگان")
 async def free_trial_start(message: types.Message, state: FSMContext):
-    cfg = get_trial_config()
+    cfg = await run_db(get_trial_config)
     is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses = cfg
 
     if not is_enabled:
@@ -33,7 +37,7 @@ async def free_trial_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
 
     if require_referral and min_referrals > 0:
-        ref_count = get_referral_count(user_id)
+        ref_count = await run_db(get_referral_count, user_id)
         if ref_count < min_referrals:
             await message.answer(
                 f"❌ برای دریافت تست رایگان باید حداقل {min_referrals} نفر رو دعوت کرده باشی.\n"
@@ -41,11 +45,11 @@ async def free_trial_start(message: types.Message, state: FSMContext):
             )
             return
 
-    user = get_user(user_id)
-    if user and user[3]:  # phone موجوده
+    user = await run_db(get_user, user_id)
+    if user and user[3]:
         phone = user[3]
-        use_count = get_trial_use_count(phone)
-        max_uses = get_phone_max_uses(phone)
+        use_count = await run_db(get_trial_use_count, phone)
+        max_uses = await run_db(get_phone_max_uses, phone)
         if use_count >= max_uses:
             await message.answer(
                 f"❌ شماره {phone} قبلاً از تست رایگان استفاده کرده.\n"
@@ -71,7 +75,7 @@ async def free_trial_start(message: types.Message, state: FSMContext):
 async def trial_phone_contact(message: types.Message, state: FSMContext):
     phone = normalize_phone(message.contact.phone_number)
     await state.clear()
-    cfg = get_trial_config()
+    cfg = await run_db(get_trial_config)
     await _process_trial_phone(message, phone, cfg)
 
 
@@ -82,14 +86,14 @@ async def trial_phone_text(message: types.Message, state: FSMContext):
         await message.answer("❌ شماره نامعتبر. مثلاً: 09123456789")
         return
     await state.clear()
-    cfg = get_trial_config()
+    cfg = await run_db(get_trial_config)
     await _process_trial_phone(message, phone, cfg)
 
 
 async def _process_trial_phone(message: types.Message, phone: str, cfg):
     user_id = message.from_user.id
-    use_count = get_trial_use_count(phone)
-    max_uses = get_phone_max_uses(phone)
+    use_count = await run_db(get_trial_use_count, phone)
+    max_uses = await run_db(get_phone_max_uses, phone)
 
     if use_count >= max_uses:
         await message.answer(
@@ -99,15 +103,20 @@ async def _process_trial_phone(message: types.Message, phone: str, cfg):
         )
         return
 
-    set_user_phone(user_id, phone)
+    await run_db(set_user_phone, user_id, phone)
     await _give_free_trial(message, phone, cfg)
 
 
 async def _give_free_trial(message: types.Message, phone: str, cfg):
+    import time, io
+    import qrcode as qrcode_lib
+    from aiogram.types import BufferedInputFile
+    from panel import create_vpn_account
+
     user_id = message.from_user.id
     is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses = cfg
 
-    record_trial_use(phone, user_id)
+    await run_db(record_trial_use, phone, user_id)
 
     sep = "─" * 22
     await message.answer(
@@ -119,14 +128,9 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
         reply_markup=get_kb(user_id)
     )
 
-    from config import ADMIN_ID
-    from panel import create_vpn_account
-    from db import save_vpn_account
-    import time
-
     username = message.from_user.username or "ندارد"
-    await message.bot.send_message(
-        ADMIN_ID,
+    await notify_admins(
+        message.bot,
         f"🧪 تست رایگان جدید!\n"
         f"👤 User: {user_id} (@{username})\n"
         f"📱 شماره: {phone}\n"
@@ -137,21 +141,19 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
     result = await create_vpn_account(user_id, email, duration_days, float(data_limit_gb))
 
     if result:
-        save_vpn_account(
+        await run_db(save_vpn_account,
             user_id=user_id,
             email=result["email"],
-            uuid=result["uuid"],
-            inbound_id=result["inbound_id"],
+            uuid=None,
+            inbound_id=None,
             expire_time=result["expire_time"],
             data_limit=result["data_limit"],
             is_trial=True,
             sub_id=result.get("sub_id"),
             sub_url=result.get("sub_url")
         )
-        import datetime, io, qrcode as qrcode_lib
-        from aiogram.types import BufferedInputFile
+        import datetime
         expire_date = datetime.datetime.fromtimestamp(result["expire_time"] / 1000).strftime('%Y-%m-%d')
-        sep = "─" * 22
         caption = (
             f"✅ اکانت تست VPN آماده شد!\n{sep}\n"
             f"🔗 لینک سابسکریپشن:\n"
@@ -189,10 +191,10 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
 @router.message(F.text == "👥 رفرال من")
 async def referral_panel(message: types.Message):
     user_id = message.from_user.id
-    ref_cfg = get_referral_config()
+    ref_cfg = await run_db(get_referral_config)
     is_enabled, reward_join, first_purchase_reward, reward_purchase, reward_pct = ref_cfg
 
-    ref_count, total_reward = get_referral_stats(user_id)
+    ref_count, total_reward = await run_db(get_referral_stats, user_id)
     bot_info = await message.bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
 
@@ -228,7 +230,7 @@ async def referral_panel(message: types.Message):
 
 @router.callback_query(F.data == "ref:history")
 async def ref_history(call: types.CallbackQuery):
-    rewards = get_referral_rewards_history(call.from_user.id)
+    rewards = await run_db(get_referral_rewards_history, call.from_user.id)
     if not rewards:
         await call.message.edit_text("📋 هنوز پاداشی دریافت نکردی.", reply_markup=back_kb("ref:back"))
         await call.answer()
@@ -244,7 +246,7 @@ async def ref_history(call: types.CallbackQuery):
 
 @router.callback_query(F.data == "ref:list")
 async def ref_list(call: types.CallbackQuery):
-    refs = get_referrals(call.from_user.id)
+    refs = await run_db(get_referrals, call.from_user.id)
     if not refs:
         await call.message.edit_text("👥 هنوز زیرمجموعه‌ای نداری.", reply_markup=back_kb("ref:back"))
         await call.answer()

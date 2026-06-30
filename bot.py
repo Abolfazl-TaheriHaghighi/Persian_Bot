@@ -1,13 +1,13 @@
 import asyncio
 import logging
-from datetime import datetime
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import BOT_TOKEN, ADMIN_ID
 from db import init_db, update_license_checked
-from license import check_license_from_db, clear_cache
+from license import check_license_from_db, warm_cache, clear_cache
+from utils import run_db
 
 from handlers import user, payments, services, referral, admin, partner, broadcast
 from handlers import license_handler
@@ -16,21 +16,22 @@ logging.basicConfig(level=logging.INFO)
 
 
 async def daily_license_check(bot: Bot):
-    """چک روزانه لایسنس + هشدار انقضا"""
+    """چک روزانه لایسنس + گرم کردن cache + هشدار انقضا"""
     while True:
-        await asyncio.sleep(86400)  # هر ۲۴ ساعت
+        await asyncio.sleep(86400)
         try:
-            result = check_license_from_db(BOT_TOKEN)
-            update_license_checked()
-            clear_cache()
+            # warm_cache داخلش DB call داره — از run_db
+            await run_db(warm_cache, BOT_TOKEN)
+            await run_db(update_license_checked)
 
+            from license import _C as result
             if result.get("permanent"):
                 continue
 
             days_left = result.get("days_left")
 
-            if not result["valid"]:
-                if result["error"] == "لایسنس منقضی شده":
+            if not result.get("valid"):
+                if result.get("error") == "لایسنس منقضی شده":
                     await bot.send_message(
                         ADMIN_ID,
                         "⛔️ لایسنس پرو منقضی شد!\n\n"
@@ -50,7 +51,21 @@ async def daily_license_check(bot: Bot):
 
 
 async def main():
-    init_db()
+    # init_db قبل از polling — یه‌بار blocking قابل قبوله
+    await asyncio.to_thread(init_db)
+
+    # گرم کردن cache لایسنس — از run_db
+    await run_db(warm_cache, BOT_TOKEN)
+
+    from license import _C as lic_result
+    if lic_result.get("valid"):
+        if lic_result.get("permanent"):
+            logging.info("✅ License: Permanent/Master")
+        else:
+            logging.info(f"✅ License: PRO — {lic_result.get('days_left')} days left")
+    else:
+        logging.warning(f"⚠️ License: FREE — {lic_result.get('error')}")
+
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -63,17 +78,6 @@ async def main():
     dp.include_router(license_handler.router)
     dp.include_router(admin.router)
 
-    # چک لایسنس موقع استارت
-    result = check_license_from_db(BOT_TOKEN)
-    if result["valid"]:
-        if result.get("permanent"):
-            logging.info("✅ License: Permanent/Master")
-        else:
-            logging.info(f"✅ License: PRO — {result['days_left']} days left")
-    else:
-        logging.warning(f"⚠️ License: FREE — {result['error']}")
-
-    # شروع چک روزانه
     asyncio.create_task(daily_license_check(bot))
 
     await dp.start_polling(bot)

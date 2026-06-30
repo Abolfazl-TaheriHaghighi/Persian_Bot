@@ -42,7 +42,19 @@ def init_db():
             name TEXT NOT NULL,
             emoji TEXT DEFAULT '📦',
             is_active BOOLEAN DEFAULT TRUE,
-            sort_order INTEGER DEFAULT 0
+            sort_order INTEGER DEFAULT 0,
+            is_custom BOOLEAN DEFAULT FALSE
+        )
+    """)
+    cur.execute("ALTER TABLE categories ADD COLUMN IF NOT EXISTS is_custom BOOLEAN DEFAULT FALSE")
+
+    # ---- لیست دسترسی سفارشی دسته‌بندی (وقتی visibility = 'custom') ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS category_custom_access (
+            id SERIAL PRIMARY KEY,
+            category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL,
+            UNIQUE(category_id, user_id)
         )
     """)
 
@@ -56,6 +68,25 @@ def init_db():
             duration_days INTEGER NOT NULL,
             data_limit_gb NUMERIC(10,2) NOT NULL DEFAULT 0,
             is_active BOOLEAN DEFAULT TRUE
+        )
+    """)
+
+    # ---- زیرگروه‌های پلن دلخواه ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS custom_plan_groups (
+            id SERIAL PRIMARY KEY,
+            category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            emoji TEXT DEFAULT '🌍',
+            price_per_gb INTEGER NOT NULL DEFAULT 0,
+            price_per_day INTEGER NOT NULL DEFAULT 0,
+            min_gb NUMERIC(10,2) NOT NULL DEFAULT 1,
+            max_gb NUMERIC(10,2) NOT NULL DEFAULT 1000,
+            min_days INTEGER NOT NULL DEFAULT 1,
+            max_days INTEGER NOT NULL DEFAULT 365,
+            inbound_ids TEXT DEFAULT '',
+            is_active BOOLEAN DEFAULT TRUE,
+            sort_order INTEGER DEFAULT 0
         )
     """)
 
@@ -168,10 +199,14 @@ def init_db():
             password TEXT DEFAULT NULL,
             api_key TEXT DEFAULT NULL,
             inbound_id INTEGER DEFAULT NULL,
-            panel_path TEXT DEFAULT ''
+            panel_path TEXT DEFAULT '',
+            sub_port INTEGER DEFAULT NULL,
+            sub_path TEXT DEFAULT 'sub'
         )
     """)
     cur.execute("INSERT INTO panel_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+    cur.execute("ALTER TABLE panel_config ADD COLUMN IF NOT EXISTS sub_port INTEGER DEFAULT NULL")
+    cur.execute("ALTER TABLE panel_config ADD COLUMN IF NOT EXISTS sub_path TEXT DEFAULT 'sub'")
 
     # ---- لایسنس ----
     cur.execute("""
@@ -433,9 +468,9 @@ def get_all_categories(active_only=True):
     conn = connect()
     cur = conn.cursor()
     if active_only:
-        cur.execute("SELECT id, name, emoji FROM categories WHERE is_active=TRUE ORDER BY sort_order, id")
+        cur.execute("SELECT id, name, emoji, is_custom FROM categories WHERE is_active=TRUE ORDER BY sort_order, id")
     else:
-        cur.execute("SELECT id, name, emoji, is_active, sort_order FROM categories ORDER BY sort_order, id")
+        cur.execute("SELECT id, name, emoji, is_active, sort_order, is_custom FROM categories ORDER BY sort_order, id")
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -444,16 +479,19 @@ def get_all_categories(active_only=True):
 def get_category(cat_id):
     conn = connect()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, emoji, is_active FROM categories WHERE id=%s", (cat_id,))
+    cur.execute("SELECT id, name, emoji, is_active, is_custom FROM categories WHERE id=%s", (cat_id,))
     r = cur.fetchone()
     conn.close()
     return r
 
 
-def add_category(name, emoji="📦"):
+def add_category(name, emoji="📦", is_custom=False):
     conn = connect()
     cur = conn.cursor()
-    cur.execute("INSERT INTO categories (name, emoji) VALUES (%s, %s) RETURNING id", (name, emoji))
+    cur.execute(
+        "INSERT INTO categories (name, emoji, is_custom) VALUES (%s, %s, %s) RETURNING id",
+        (name, emoji, is_custom)
+    )
     cid = cur.fetchone()[0]
     conn.commit()
     conn.close()
@@ -900,29 +938,7 @@ def update_panel_config(**kwargs):
 
 
 # ================== VPN ACCOUNTS ==================
-
-def save_vpn_account(user_id, email, uuid, inbound_id, expire_time, data_limit, purchase_id=None, is_trial=False, sub_id=None, sub_url=None):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO vpn_accounts (user_id, purchase_id, email, uuid, sub_id, sub_url, inbound_id, expire_time, data_limit, is_trial)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-    """, (user_id, purchase_id, email, uuid, sub_id, sub_url, inbound_id, expire_time, data_limit, is_trial))
-    vid = cur.fetchone()[0]
-    conn.commit()
-    conn.close()
-    return vid
-
-def get_user_vpn_accounts(user_id):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT email, uuid, sub_url, inbound_id, expire_time, data_limit, created_at, is_trial
-        FROM vpn_accounts WHERE user_id=%s ORDER BY created_at DESC
-    """, (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+# (توابع کامل پایین‌تر تعریف شدن، اینجا فقط placeholder بود)
 
 
 # ================== PARTNERS ==================
@@ -1030,25 +1046,39 @@ def set_category_visibility(cat_id, visibility):
     conn.commit()
     conn.close()
 
-def get_categories_for_user(is_partner_user: bool):
-    """دسته‌بندی‌های قابل نمایش برای کاربر"""
+def get_categories_for_user(is_partner_user: bool, user_id: int = None):
+    """دسته‌بندی‌های قابل نمایش برای کاربر — شامل حالت سفارشی (custom) بر اساس user_id"""
     conn = connect()
     cur = conn.cursor()
     if is_partner_user:
-        # همکار: همه + دسته‌های مخصوص همکاران (نه دسته‌های فقط کاربران عادی)
         cur.execute("""
-            SELECT id, name, emoji FROM categories
+            SELECT id, name, emoji, is_custom FROM categories
             WHERE is_active=TRUE AND (visibility IS NULL OR visibility IN ('all','partners'))
             ORDER BY sort_order, id
         """)
     else:
-        # کاربر عادی: همه + دسته‌های مخصوص کاربران عادی (نه دسته‌های همکاران)
         cur.execute("""
-            SELECT id, name, emoji FROM categories
+            SELECT id, name, emoji, is_custom FROM categories
             WHERE is_active=TRUE AND (visibility IS NULL OR visibility IN ('all','users'))
             ORDER BY sort_order, id
         """)
-    rows = cur.fetchall()
+    rows = list(cur.fetchall())
+
+    # دسته‌بندی‌های visibility='custom' که این کاربر به‌صورت جداگانه بهشون دسترسی داره
+    if user_id is not None:
+        cur.execute("""
+            SELECT c.id, c.name, c.emoji, c.is_custom
+            FROM categories c
+            JOIN category_custom_access a ON a.category_id = c.id
+            WHERE c.is_active=TRUE AND c.visibility='custom' AND a.user_id=%s
+            ORDER BY c.sort_order, c.id
+        """, (user_id,))
+        custom_rows = cur.fetchall()
+        existing_ids = {r[0] for r in rows}
+        for r in custom_rows:
+            if r[0] not in existing_ids:
+                rows.append(r)
+
     conn.close()
     return rows
 
@@ -1341,25 +1371,6 @@ def set_category_visibility(cat_id, visibility):
     conn.close()
 
 
-def get_categories_for_user(is_partner_user: bool):
-    conn = connect()
-    cur = conn.cursor()
-    if is_partner_user:
-        cur.execute("""
-            SELECT id, name, emoji FROM categories
-            WHERE is_active=TRUE ORDER BY sort_order, id
-        """)
-    else:
-        cur.execute("""
-            SELECT id, name, emoji FROM categories
-            WHERE is_active=TRUE AND (visibility='all' OR visibility IS NULL)
-            ORDER BY sort_order, id
-        """)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
 # ================== BROADCAST ==================
 
 def get_all_user_ids():
@@ -1386,7 +1397,7 @@ def get_panel_config():
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT panel_url, auth_type, username, password, api_key, inbound_id, panel_path
+        SELECT panel_url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path
         FROM panel_config WHERE id=1
     """)
     r = cur.fetchone()
@@ -1395,7 +1406,7 @@ def get_panel_config():
 
 
 def update_panel_config(**kwargs):
-    allowed = {"panel_url", "auth_type", "username", "password", "api_key", "inbound_id", "panel_path"}
+    allowed = {"panel_url", "auth_type", "username", "password", "api_key", "inbound_id", "panel_path", "sub_port", "sub_path"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return
@@ -1425,11 +1436,24 @@ def save_vpn_account(user_id, email, uuid, inbound_id, expire_time, data_limit,
 
 
 def get_user_vpn_accounts(user_id):
+    """
+    اطلاعات کامل سرویس‌های VPN کاربر شامل نام سرویس و دسته‌بندی
+    (با JOIN به purchases و services/categories — برای تست رایگان این فیلدها NULL میشن)
+    """
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT email, uuid, sub_url, inbound_id, expire_time, data_limit, created_at, is_trial
-        FROM vpn_accounts WHERE user_id=%s ORDER BY created_at DESC
+        SELECT
+            v.email, v.uuid, v.sub_url, v.inbound_id, v.expire_time,
+            v.data_limit, v.created_at, v.is_trial,
+            COALESCE(p.service_name, s.name, 'تست رایگان') as service_name,
+            COALESCE(c.name, '—') as category_name
+        FROM vpn_accounts v
+        LEFT JOIN purchases p ON v.purchase_id = p.id
+        LEFT JOIN services s ON p.service_id = s.id
+        LEFT JOIN categories c ON s.category_id = c.id
+        WHERE v.user_id=%s
+        ORDER BY v.created_at DESC
     """, (user_id,))
     rows = cur.fetchall()
     conn.close()
@@ -1443,3 +1467,175 @@ def has_previous_purchase(user_id):
     r = cur.fetchone()
     conn.close()
     return r[0] > 1
+
+
+# ================== CUSTOM PLAN GROUPS ==================
+
+def add_category_custom_flag(cat_id, is_custom=True):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE categories SET is_custom=%s WHERE id=%s", (is_custom, cat_id))
+    conn.commit()
+    conn.close()
+
+
+def is_custom_category(cat_id) -> bool:
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT is_custom FROM categories WHERE id=%s", (cat_id,))
+    r = cur.fetchone()
+    conn.close()
+    return bool(r and r[0])
+
+
+def get_custom_groups(category_id, active_only=True):
+    conn = connect()
+    cur = conn.cursor()
+    if active_only:
+        cur.execute("""
+            SELECT id, name, emoji, price_per_gb, price_per_day, min_gb, max_gb, min_days, max_days, inbound_ids
+            FROM custom_plan_groups WHERE category_id=%s AND is_active=TRUE
+            ORDER BY sort_order, id
+        """, (category_id,))
+    else:
+        cur.execute("""
+            SELECT id, name, emoji, price_per_gb, price_per_day, min_gb, max_gb, min_days, max_days, inbound_ids, is_active
+            FROM custom_plan_groups WHERE category_id=%s
+            ORDER BY sort_order, id
+        """, (category_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_custom_group(group_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, category_id, name, emoji, price_per_gb, price_per_day,
+               min_gb, max_gb, min_days, max_days, inbound_ids, is_active
+        FROM custom_plan_groups WHERE id=%s
+    """, (group_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+
+def add_custom_group(category_id, name, emoji="🌍"):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO custom_plan_groups (category_id, name, emoji)
+        VALUES (%s, %s, %s) RETURNING id
+    """, (category_id, name, emoji))
+    gid = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return gid
+
+
+def update_custom_group(group_id, field, value):
+    allowed = {
+        "name": "name", "emoji": "emoji",
+        "price_per_gb": "price_per_gb", "price_per_day": "price_per_day",
+        "min_gb": "min_gb", "max_gb": "max_gb",
+        "min_days": "min_days", "max_days": "max_days",
+        "inbound_ids": "inbound_ids",
+    }
+    col = allowed.get(field)
+    if not col:
+        return
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE custom_plan_groups SET {col}=%s WHERE id=%s", (value, group_id))
+    conn.commit()
+    conn.close()
+
+
+def toggle_custom_group(group_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE custom_plan_groups SET is_active = NOT is_active WHERE id=%s RETURNING is_active", (group_id,))
+    r = cur.fetchone()
+    conn.commit()
+    conn.close()
+    return r[0] if r else None
+
+
+def delete_custom_group(group_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM custom_plan_groups WHERE id=%s", (group_id,))
+    conn.commit()
+    conn.close()
+
+
+# ================== CATEGORY CUSTOM ACCESS ==================
+
+def add_category_custom_user(category_id, user_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO category_custom_access (category_id, user_id)
+        VALUES (%s, %s) ON CONFLICT (category_id, user_id) DO NOTHING
+    """, (category_id, user_id))
+    conn.commit()
+    conn.close()
+
+
+def remove_category_custom_user(category_id, user_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM category_custom_access WHERE category_id=%s AND user_id=%s",
+        (category_id, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_category_custom_users(category_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT a.user_id, u.phone
+        FROM category_custom_access a
+        LEFT JOIN users u ON u.telegram_id = a.user_id
+        WHERE a.category_id=%s
+        ORDER BY a.id
+    """, (category_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def has_category_custom_access(category_id, user_id) -> bool:
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM category_custom_access WHERE category_id=%s AND user_id=%s",
+        (category_id, user_id)
+    )
+    r = cur.fetchone()
+    conn.close()
+    return r is not None
+
+
+def find_user_id_by_phone(phone: str):
+    """پیدا کردن آیدی عددی کاربر از روی شماره (اگه قبلاً تو دیتابیس ثبت شده)"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT telegram_id FROM users WHERE phone=%s", (phone,))
+    r = cur.fetchone()
+    conn.close()
+    return r[0] if r else None
+
+
+def get_custom_access_category_ids(user_id):
+    """دسته‌بندی‌هایی که این کاربر به صورت سفارشی بهشون دسترسی داره"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT category_id FROM category_custom_access WHERE user_id=%s", (user_id,))
+    rows = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return rows

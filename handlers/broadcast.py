@@ -7,6 +7,7 @@ from config import ADMIN_ID, is_admin
 from db import get_all_user_ids, get_partner_user_ids
 from keyboards import get_kb
 from states import AdminBroadcast
+from utils import run_db
 
 router = Router()
 
@@ -81,9 +82,9 @@ async def broadcast_send(message: types.Message, state: FSMContext, bot: Bot):
 
     # گرفتن لیست آی‌دی‌ها
     if target == "all":
-        user_ids = get_all_user_ids()
+        user_ids = await run_db(get_all_user_ids)
     elif target == "partners":
-        user_ids = get_partner_user_ids()
+        user_ids = await run_db(get_partner_user_ids)
     else:
         user_ids = custom_ids or []
 

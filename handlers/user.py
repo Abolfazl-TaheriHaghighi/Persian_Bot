@@ -11,6 +11,7 @@ from db import (
     connect as db_connect
 )
 from keyboards import get_kb
+from utils import run_db
 
 router = Router()
 
@@ -20,8 +21,7 @@ router = Router()
 # ================================================================
 
 async def check_membership(bot: Bot, user_id: int) -> list:
-    """لیست کانال‌هایی که کاربر عضوشون نیست رو برمی‌گردونه"""
-    channels = get_active_channels()
+    channels = await run_db(get_active_channels)
     not_joined = []
     for ch in channels:
         ch_id, channel_id, username, title, invite_link = ch
@@ -35,14 +35,12 @@ async def check_membership(bot: Bot, user_id: int) -> list:
 
 
 async def send_join_message(message: types.Message, not_joined: list):
-    """پیام جوین اجباری با دکمه‌های چنل‌ها"""
     text = "⛔️ برای استفاده از ربات باید عضو کانال‌های زیر بشی:\n\n"
     buttons = []
     for ch_id, channel_id, username, title, invite_link in not_joined:
         link = invite_link or (f"https://t.me/{username.lstrip('@')}" if username else None)
         if link:
             buttons.append([InlineKeyboardButton(text=f"📢 {title}", url=link)])
-
     buttons.append([InlineKeyboardButton(text="✅ عضو شدم، بررسی کن", callback_data="check_membership")])
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
@@ -54,7 +52,7 @@ async def recheck_membership(call: types.CallbackQuery):
         await call.answer("❌ هنوز عضو همه کانال‌ها نشدی!", show_alert=True)
     else:
         await call.message.delete()
-        bal = get_balance(call.from_user.id)
+        bal = await run_db(get_balance, call.from_user.id)
         await call.message.answer(
             f"✅ عضویت تایید شد!\n\n💰 موجودی: {bal:,} تومان",
             reply_markup=get_kb(call.from_user.id)
@@ -70,7 +68,6 @@ async def recheck_membership(call: types.CallbackQuery):
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
 
-    # پردازش لینک رفرال
     args = message.text.split()
     referred_by = None
     if len(args) > 1 and args[1].startswith("ref_"):
@@ -81,32 +78,34 @@ async def start(message: types.Message, state: FSMContext):
         except ValueError:
             referred_by = None
 
-    add_user(message.from_user.id, referred_by)
+    await run_db(add_user, message.from_user.id, referred_by)
 
-    # چک عضویت
     not_joined = await check_membership(message.bot, message.from_user.id)
     if not_joined:
         await send_join_message(message, not_joined)
         return
 
-    # اگه رفرال داشت → پاداش ثبت‌نام
     if referred_by:
         try:
-            conn2 = db_connect()
-            cur2 = conn2.cursor()
-            cur2.execute("""
-                SELECT COUNT(*) FROM referral_rewards
-                WHERE referrer_id=%s AND referred_id=%s AND reward_type='join'
-            """, (referred_by, message.from_user.id))
-            already_rewarded = cur2.fetchone()[0] > 0
-            conn2.close()
+            def _check_join_reward(referrer, referred):
+                from db import connect as _conn
+                conn = _conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT COUNT(*) FROM referral_rewards
+                    WHERE referrer_id=%s AND referred_id=%s AND reward_type='join'
+                """, (referrer, referred))
+                result = cur.fetchone()[0] > 0
+                conn.close()
+                return result
+            already_rewarded = await run_db(_check_join_reward, referred_by, message.from_user.id)
         except Exception:
             already_rewarded = True
 
         if not already_rewarded:
-            ref_cfg = get_referral_config()
+            ref_cfg = await run_db(get_referral_config)
             if ref_cfg and ref_cfg[0] and ref_cfg[1] > 0:
-                give_referral_reward(referred_by, message.from_user.id, "join", ref_cfg[1])
+                await run_db(give_referral_reward, referred_by, message.from_user.id, "join", ref_cfg[1])
                 try:
                     await message.bot.send_message(
                         referred_by,
@@ -116,7 +115,7 @@ async def start(message: types.Message, state: FSMContext):
                 except Exception:
                     pass
 
-    bal = get_balance(message.from_user.id)
+    bal = await run_db(get_balance, message.from_user.id)
     await message.answer(
         f"👋 خوش اومدی به ربات VPN!\n\n💰 موجودی: {bal:,} تومان",
         reply_markup=get_kb(message.from_user.id)
@@ -126,14 +125,11 @@ async def start(message: types.Message, state: FSMContext):
 @router.message(F.text == "🏠 خانه")
 async def home(message: types.Message, state: FSMContext):
     await state.clear()
-
-    # چک عضویت
     not_joined = await check_membership(message.bot, message.from_user.id)
     if not_joined:
         await send_join_message(message, not_joined)
         return
-
-    bal = get_balance(message.from_user.id)
+    bal = await run_db(get_balance, message.from_user.id)
     await message.answer(
         f"🏠 صفحه اصلی\n\n💰 موجودی: {bal:,} تومان",
         reply_markup=get_kb(message.from_user.id)
@@ -146,7 +142,7 @@ async def home(message: types.Message, state: FSMContext):
 
 @router.message(F.text == "💰 موجودی من")
 async def balance(message: types.Message):
-    bal = get_balance(message.from_user.id)
+    bal = await run_db(get_balance, message.from_user.id)
     await message.answer(f"💰 موجودی شما: {bal:,} تومان")
 
 
@@ -160,53 +156,96 @@ async def service_status(message: types.Message):
     from panel import get_client_status
     import datetime
 
-    accounts = get_user_vpn_accounts(message.from_user.id)
+    accounts = await run_db(get_user_vpn_accounts, message.from_user.id)
     if not accounts:
         await message.answer("📊 هنوز سرویس فعالی نداری.")
         return
+
+    def _fmt_bytes(b):
+        if b is None:
+            return "—"
+        b = float(b)
+        if b >= 1024 ** 3:
+            return f"{b / 1024 ** 3:.2f} GB"
+        if b >= 1024 ** 2:
+            return f"{b / 1024 ** 2:.0f} MB"
+        return f"{b / 1024:.0f} KB"
+
+    def _fmt_time_left(target_dt: datetime.datetime) -> str:
+        now = datetime.datetime.now()
+        diff = target_dt - now
+        if diff.total_seconds() <= 0:
+            return "⛔️ منقضی شده"
+        days = diff.days
+        hours = diff.seconds // 3600
+        if days > 0:
+            return f"⏳ {days} روز و {hours} ساعت مونده"
+        minutes = (diff.seconds % 3600) // 60
+        if hours > 0:
+            return f"⏳ {hours} ساعت و {minutes} دقیقه مونده"
+        return f"⏳ {minutes} دقیقه مونده"
 
     sep = "─" * 22
     text = f"📊 وضعیت سرویس‌های شما\n{sep}\n"
 
     for acc in accounts:
-        email, uuid, sub_url, inbound_id, expire_time, data_limit, created_at, is_trial = acc
-        label = "🧪 تست" if is_trial else "💎 سرویس"
+        (email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db,
+         created_at, is_trial, service_name, category_name) = acc
 
-        if expire_time:
-            exp_dt = datetime.datetime.fromtimestamp(expire_time / 1000)
-            remaining = (exp_dt - datetime.datetime.now()).days
-            exp_str = exp_dt.strftime('%Y-%m-%d')
-            if remaining > 0:
-                time_str = f"📅 انقضا: {exp_str} ({remaining} روز مونده)"
-            else:
-                time_str = "⛔️ منقضی شده"
+        label = "🧪 تست رایگان" if is_trial else "💎 سرویس"
+
+        text += f"{label}\n"
+        text += f"📦 نام: {service_name}\n"
+        if not is_trial:
+            text += f"🗂 دسته‌بندی: {category_name}\n"
+
+        # اطلاعات زنده از پنل — اولویت با پنل، fallback به DB
+        stat = await get_client_status(email)
+
+        expiry_ms = None
+        total_bytes = None
+        used_bytes = None
+        enable = True
+
+        if stat:
+            expiry_ms = stat.get("expiryTime") or expire_time_db
+            total_bytes = stat.get("total") if stat.get("total") not in (None, 0) else data_limit_db
+            up = stat.get("up", 0) or 0
+            down = stat.get("down", 0) or 0
+            used_bytes = up + down
+            enable = stat.get("enable", True)
         else:
-            time_str = "📅 بدون انقضا"
+            expiry_ms = expire_time_db
+            total_bytes = data_limit_db
+            used_bytes = None
 
-        text += f"{label}\n{time_str}\n"
+        # زمان باقیمونده
+        if expiry_ms:
+            exp_dt = datetime.datetime.fromtimestamp(expiry_ms / 1000)
+            text += f"{_fmt_time_left(exp_dt)}\n"
+            text += f"📅 تاریخ انقضا: {exp_dt.strftime('%Y-%m-%d %H:%M')}\n"
+        else:
+            text += "📅 بدون محدودیت زمانی\n"
+
+        # حجم
+        if total_bytes and total_bytes > 0:
+            remaining_bytes = max(0, total_bytes - (used_bytes or 0))
+            text += f"📶 حجم کل: {_fmt_bytes(total_bytes)}\n"
+            text += f"📥 حجم مصرفی: {_fmt_bytes(used_bytes or 0)}\n"
+            text += f"📤 حجم باقی‌مانده: {_fmt_bytes(remaining_bytes)}\n"
+        else:
+            text += f"📶 حجم: نامحدود"
+            if used_bytes is not None:
+                text += f" | مصرفی: {_fmt_bytes(used_bytes)}"
+            text += "\n"
+
+        text += f"🔘 وضعیت: {'✅ فعال' if enable else '❌ غیرفعال'}\n"
 
         if sub_url:
             text += f"🔗 لینک سابسکریپشن:\n`{sub_url}`\n"
 
-        stat = await get_client_status(email)
-        if stat:
-            up = stat.get("up", 0)
-            down = stat.get("down", 0)
-            total = stat.get("total", 0)
-            used = up + down
-            enable = stat.get("enable", True)
-
-            def _fmt(b):
-                if b >= 1024 ** 3:
-                    return f"{b / 1024 ** 3:.1f} GB"
-                return f"{b / 1024 ** 2:.0f} MB"
-
-            text += f"📶 مصرف: {_fmt(used)}"
-            if total > 0:
-                text += f" از {_fmt(total)} ({_fmt(total - used)} مونده)"
-            text += f"\n🔘 وضعیت: {'✅ فعال' if enable else '❌ غیرفعال'}\n"
-        else:
-            text += "⚠️ اطلاعات از پنل دریافت نشد\n"
+        if not stat:
+            text += "⚠️ اطلاعات زنده از پنل دریافت نشد (نمایش از کش)\n"
 
         text += f"{sep}\n"
 
@@ -219,7 +258,7 @@ async def service_status(message: types.Message):
 
 @router.message(F.text == "📋 خریدهای من")
 async def my_purchases(message: types.Message):
-    purchases = get_user_purchases(message.from_user.id)
+    purchases = await run_db(get_user_purchases, message.from_user.id)
     if not purchases:
         await message.answer("📋 هنوز خریدی نداشتی.")
         return

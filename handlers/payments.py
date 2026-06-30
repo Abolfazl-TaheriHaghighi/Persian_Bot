@@ -8,13 +8,10 @@ from db import (
 )
 from keyboards import get_kb
 from states import DepositStates, RejectReason
+from utils import run_db, notify_admins
 
 router = Router()
 
-
-# ================================================================
-# DEPOSIT
-# ================================================================
 
 @router.message(F.text == "➕ شارژ حساب")
 async def deposit(message: types.Message, state: FSMContext):
@@ -41,7 +38,7 @@ async def handle_receipt(message: types.Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     amount = data.get("amount")
     user_id = message.from_user.id
-    tx_id = create_transaction(user_id, amount)
+    tx_id = await run_db(create_transaction, user_id, amount)
     username = message.from_user.username or "ندارد"
     caption = (
         f"💳 درخواست شارژ جدید\n"
@@ -50,15 +47,20 @@ async def handle_receipt(message: types.Message, state: FSMContext, bot: Bot):
         f"💰 مبلغ: {amount:,} تومان\n"
         f"🔑 TX_ID: {tx_id}"
     )
-    await bot.send_photo(
-        ADMIN_ID,
-        photo=message.photo[-1].file_id,
-        caption=caption,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ تایید", callback_data=f"approve:{tx_id}:{user_id}:{amount}"),
-            InlineKeyboardButton(text="❌ رد",    callback_data=f"reject:{tx_id}:{user_id}:{amount}")
-        ]])
-    )
+    from config import ADMIN_IDS
+    for _aid in ADMIN_IDS:
+        try:
+            await bot.send_photo(
+                _aid,
+                photo=message.photo[-1].file_id,
+                caption=caption,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="✅ تایید", callback_data=f"approve:{tx_id}:{user_id}:{amount}"),
+                    InlineKeyboardButton(text="❌ رد",    callback_data=f"reject:{tx_id}:{user_id}:{amount}")
+                ]])
+            )
+        except Exception:
+            pass
     await state.clear()
     await message.answer("📤 فیش ارسال شد، منتظر تایید ادمین باش.", reply_markup=get_kb(user_id))
 
@@ -68,10 +70,6 @@ async def handle_receipt_wrong(message: types.Message):
     await message.answer("❌ لطفاً تصویر فیش رو ارسال کن (نه متن یا فایل دیگه):")
 
 
-# ================================================================
-# APPROVE / REJECT
-# ================================================================
-
 @router.callback_query(F.data.startswith("approve:"))
 async def approve(call: types.CallbackQuery, bot: Bot):
     if not is_admin(call.from_user.id):
@@ -79,8 +77,8 @@ async def approve(call: types.CallbackQuery, bot: Bot):
         return
     _, tx_id, user_id, amount = call.data.split(":")
     tx_id, user_id, amount = int(tx_id), int(user_id), int(amount)
-    approve_transaction(tx_id, user_id, amount)
-    new_bal = get_balance(user_id)
+    await run_db(approve_transaction, tx_id, user_id, amount)
+    new_bal = await run_db(get_balance, user_id)
     await bot.send_message(user_id,
         f"✅ شارژ تایید شد\n💰 +{amount:,} تومان اضافه شد\n👛 موجودی: {new_bal:,} تومان")
     await call.message.edit_caption(call.message.caption + "\n\n✅ تایید شد")
@@ -109,7 +107,7 @@ async def reject(call: types.CallbackQuery, state: FSMContext):
 async def reject_with_reason(message: types.Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     reason = None if message.text == "/skip" else message.text.strip()
-    reject_transaction(data["tx_id"])
+    await run_db(reject_transaction, data["tx_id"])
     user_msg = f"❌ درخواست شارژ شما رد شد\n💰 مبلغ: {data['amount']:,} تومان"
     if reason:
         user_msg += f"\n\n📝 دلیل: {reason}"

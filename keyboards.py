@@ -3,7 +3,6 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from config import ADMIN_ID, is_admin
-from db import get_trial_config, get_referral_config
 
 
 def get_kb(user_id):
@@ -43,15 +42,28 @@ def admin_panel_kb():
         [InlineKeyboardButton(text="🤝 مدیریت همکاران",         callback_data="admin:partners")],
         [InlineKeyboardButton(text="👁 دسترسی دسته‌بندی‌ها",   callback_data="admin:cat_visibility")],
         [InlineKeyboardButton(text="📣 ارسال پیام گروهی",       callback_data="admin:broadcast")],
+        [InlineKeyboardButton(text="🎛 پلن‌های دلخواه",          callback_data="admin:custom_plans")],
         [InlineKeyboardButton(text="🔑 لایسنس",                  callback_data="admin:license")],
     ])
 
 
 def categories_kb(categories):
+    buttons = []
+    for c in categories:
+        cid, name, emoji = c[0], c[1], c[2]
+        is_custom = c[3] if len(c) > 3 else False
+        cb = f"customcat:{cid}" if is_custom else f"cat:{cid}"
+        buttons.append([InlineKeyboardButton(text=f"{emoji} {name}", callback_data=cb)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def custom_groups_kb(groups, cat_id):
+    """لیست زیرگروه‌های پلن دلخواه"""
     buttons = [
-        [InlineKeyboardButton(text=f"{c[2]} {c[1]}", callback_data=f"cat:{c[0]}")]
-        for c in categories
+        [InlineKeyboardButton(text=f"{g[2]} {g[1]}", callback_data=f"customgrp:{g[0]}")]
+        for g in groups
     ]
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت به دسته‌ها", callback_data="shop:back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -145,9 +157,8 @@ def admin_discounts_kb(codes):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def admin_trial_menu_kb():
+def admin_trial_menu_kb(cfg):
     from utils import data_label_short
-    cfg = get_trial_config()
     is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses = cfg
     status = "✅ فعال" if is_enabled else "❌ غیرفعال"
     ref_req = "✅ بله" if require_referral else "❌ خیر"
@@ -164,8 +175,7 @@ def admin_trial_menu_kb():
     ])
 
 
-def admin_referral_menu_kb():
-    cfg = get_referral_config()
+def admin_referral_menu_kb(cfg):
     is_enabled, reward_join, first_purchase_reward, reward_purchase, reward_pct = cfg
     status = "✅ فعال" if is_enabled else "❌ غیرفعال"
     return InlineKeyboardMarkup(inline_keyboard=[

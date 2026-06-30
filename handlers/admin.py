@@ -32,7 +32,7 @@ from states import (
 from pro_guard import (
     require_pro, check_free_category_limit, check_free_service_limit
 )
-from utils import format_data, data_label_short, normalize_phone
+from utils import format_data, data_label_short, normalize_phone, run_db
 
 router = Router()
 
@@ -60,7 +60,7 @@ async def admin_back(call: types.CallbackQuery):
 async def admin_users(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    users = get_all_users()
+    users = await run_db(get_all_users)
     text = f"👥 تعداد کاربران: {len(users)}\n\n"
     for u in users:
         text += f"🆔 {u[0]} | 💰 {u[1]:,} تومان\n"
@@ -72,7 +72,7 @@ async def admin_users(call: types.CallbackQuery):
 async def admin_pending(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    txs = get_pending_transactions()
+    txs = await run_db(get_pending_transactions)
     if not txs:
         text = "✅ تراکنش در انتظاری وجود نداره."
     else:
@@ -88,7 +88,7 @@ async def admin_pending(call: types.CallbackQuery):
 async def admin_purchases(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    purchases = get_all_purchases()
+    purchases = await run_db(get_all_purchases)
     if not purchases:
         text = "📋 هنوز خریدی انجام نشده."
     else:
@@ -108,7 +108,7 @@ async def admin_purchases(call: types.CallbackQuery):
 async def admin_categories(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    cats = get_all_categories(active_only=False)
+    cats = await run_db(get_all_categories, active_only=False)
     if not cats:
         await call.message.edit_text("🗂 هیچ دسته‌ای ثبت نشده.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ افزودن دسته", callback_data="admin:add_category")],
@@ -124,9 +124,9 @@ async def admin_toggle_cat(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     cat_id = int(call.data.split(":")[2])
-    new_status = toggle_category(cat_id)
+    new_status = await run_db(toggle_category, cat_id)
     await call.answer("✅ فعال شد" if new_status else "❌ غیرفعال شد", show_alert=True)
-    cats = get_all_categories(active_only=False)
+    cats = await run_db(get_all_categories, active_only=False)
     await call.message.edit_text("🗂 دسته‌بندی‌ها:\n✅=فعال | ❌=غیرفعال", reply_markup=admin_categories_kb(cats))
 
 
@@ -135,9 +135,9 @@ async def admin_del_cat(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     cat_id = int(call.data.split(":")[2])
-    delete_category(cat_id)
+    await run_db(delete_category, cat_id)
     await call.answer("🗑 دسته غیرفعال شد", show_alert=True)
-    cats = get_all_categories(active_only=False)
+    cats = await run_db(get_all_categories, active_only=False)
     if cats:
         await call.message.edit_text("🗂 دسته‌بندی‌ها:", reply_markup=admin_categories_kb(cats))
     else:
@@ -166,7 +166,7 @@ async def admin_add_cat_name(message: types.Message, state: FSMContext):
 async def admin_add_cat_emoji(message: types.Message, state: FSMContext):
     emoji = "📦" if message.text == "/skip" else message.text.strip()
     data = await state.get_data()
-    cid = add_category(data["name"], emoji)
+    cid = await run_db(add_category, data["name"], emoji)
     await state.clear()
     await message.answer(
         f"✅ دسته‌بندی اضافه شد!\n{emoji} {data['name']}\n🔑 ID: {cid}",
@@ -182,7 +182,7 @@ async def admin_add_cat_emoji(message: types.Message, state: FSMContext):
 async def admin_services_list(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    services = get_all_services(active_only=False)
+    services = await run_db(get_all_services, active_only=False)
     if not services:
         await call.message.edit_text("📦 هیچ سرویسی ثبت نشده.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ افزودن سرویس", callback_data="admin:add_service")],
@@ -198,7 +198,7 @@ async def admin_svc_detail(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     sid = int(call.data.split(":")[2])
-    service = get_service(sid)
+    service = await run_db(get_service, sid)
     if not service:
         await call.answer("❌ سرویس پیدا نشد", show_alert=True)
         return
@@ -223,9 +223,9 @@ async def admin_toggle_service(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     sid = int(call.data.split(":")[2])
-    new_status = toggle_service(sid)
+    new_status = await run_db(toggle_service, sid)
     await call.answer("✅ فعال شد" if new_status else "❌ غیرفعال شد", show_alert=True)
-    service = get_service(sid)
+    service = await run_db(get_service, sid)
     if service:
         s_id, name, desc, price, days, data_gb, is_active, cat_name = service
         sep = "─" * 22
@@ -243,9 +243,9 @@ async def admin_hard_del_service(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     sid = int(call.data.split(":")[2])
-    hard_delete_service(sid)
+    await run_db(hard_delete_service, sid)
     await call.answer("🗑 سرویس کاملاً حذف شد", show_alert=True)
-    services = get_all_services(active_only=False)
+    services = await run_db(get_all_services, active_only=False)
     if services:
         await call.message.edit_text("📦 سرویس‌ها:", reply_markup=admin_services_kb(services))
     else:
@@ -314,7 +314,7 @@ async def admin_save_edit(message: types.Message, state: FSMContext):
     else:
         value = raw
 
-    update_service(sid, field, value)
+    await run_db(update_service, sid, field, value)
     await state.clear()
     await message.answer("✅ سرویس آپدیت شد!", reply_markup=get_kb(message.from_user.id))
 
@@ -327,7 +327,7 @@ async def admin_add_service_start(call: types.CallbackQuery, state: FSMContext):
         return
     if not await check_free_service_limit(call):
         return
-    cats = get_all_categories(active_only=True)
+    cats = await run_db(get_all_categories, active_only=True)
     buttons = [[InlineKeyboardButton(text=f"{c[2]} {c[1]}", callback_data=f"admin:svc_cat:{c[0]}")] for c in cats]
     buttons.append([InlineKeyboardButton(text="بدون دسته", callback_data="admin:svc_cat:0")])
     await state.set_state(AdminAddService.category)
@@ -390,7 +390,7 @@ async def admin_add_svc_data(message: types.Message, state: FSMContext):
         await message.answer("❌ عدد معتبر وارد کن:")
         return
     data = await state.get_data()
-    sid = add_service(data["name"], data.get("description", ""), data["price"], data["duration"], data_gb, data.get("category_id"))
+    sid = await run_db(add_service, data["name"], data.get("description", ""), data["price"], data["duration"], data_gb, data.get("category_id"))
     await state.clear()
     await message.answer(
         f"✅ سرویس اضافه شد!\n\n📦 {data['name']}\n"
@@ -409,7 +409,7 @@ async def admin_discounts(call: types.CallbackQuery):
         return
     if not await require_pro(call, "کد تخفیف"):
         return
-    codes = get_all_discount_codes()
+    codes = await run_db(get_all_discount_codes)
     text = "🎁 کدهای تخفیف:\n(برای حذف روی کد کلیک کن)\n\n"
     if not codes:
         text += "هیچ کدی ثبت نشده."
@@ -468,7 +468,7 @@ async def admin_discount_max_uses(message: types.Message, state: FSMContext):
         return
     max_uses = int(message.text)
     data = await state.get_data()
-    cid = create_discount_code(
+    cid = await run_db(create_discount_code, 
         data["code"],
         data["discount_type"],
         data["discount_value"],
@@ -491,9 +491,9 @@ async def admin_del_discount(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     dc_id = int(call.data.split(":")[2])
-    delete_discount_code(dc_id)
+    await run_db(delete_discount_code, dc_id)
     await call.answer("🗑 کد حذف شد", show_alert=True)
-    codes = get_all_discount_codes()
+    codes = await run_db(get_all_discount_codes)
     text = "🎁 کدهای تخفیف:\n(برای حذف روی کد کلیک کن)\n\n"
     if not codes:
         text += "هیچ کدی ثبت نشده."
@@ -533,7 +533,7 @@ async def admin_edit_balance_amount(message: types.Message, state: FSMContext, b
     text = message.text.strip()
     data = await state.get_data()
     uid = data["target_user_id"]
-    old_bal = get_balance(uid)
+    old_bal = await run_db(get_balance, uid)
 
     if text.startswith("="):
         val = text[1:]
@@ -541,29 +541,29 @@ async def admin_edit_balance_amount(message: types.Message, state: FSMContext, b
             await message.answer("❌ فرمت اشتباه:")
             return
         new_val = int(val)
-        set_balance(uid, new_val)
+        await run_db(set_balance, uid, new_val)
         action = f"ست شد به {new_val:,} تومان"
         user_msg = (f"🔔 موجودی حساب شما توسط ادمین تغییر کرد\n"
                     f"💰 موجودی قبلی: {old_bal:,} تومان\n"
                     f"💰 موجودی جدید: {new_val:,} تومان")
     elif text.lstrip("-").isdigit():
         val = int(text)
-        add_balance(uid, val)
+        await run_db(add_balance, uid, val)
         if val > 0:
             action = f"+{val:,} تومان اضافه شد"
             user_msg = (f"🔔 موجودی حساب شما توسط ادمین افزایش یافت\n"
                         f"💚 +{val:,} تومان اضافه شد\n"
-                        f"💰 موجودی جدید: {get_balance(uid):,} تومان")
+                        f"💰 موجودی جدید: {await run_db(get_balance, uid):,} تومان")
         else:
             action = f"{val:,} تومان کسر شد"
             user_msg = (f"🔔 موجودی حساب شما توسط ادمین کاهش یافت\n"
                         f"🔴 {val:,} تومان کسر شد\n"
-                        f"💰 موجودی جدید: {get_balance(uid):,} تومان")
+                        f"💰 موجودی جدید: {await run_db(get_balance, uid):,} تومان")
     else:
         await message.answer("❌ فرمت اشتباه:")
         return
 
-    new_bal = get_balance(uid)
+    new_bal = await run_db(get_balance, uid)
     await state.clear()
     try:
         await bot.send_message(uid, user_msg)
@@ -584,7 +584,8 @@ async def admin_edit_balance_amount(message: types.Message, state: FSMContext, b
 async def admin_trial_menu(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb())
+    cfg = await run_db(get_trial_config)
+    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb(cfg))
     await call.answer()
 
 
@@ -592,22 +593,24 @@ async def admin_trial_menu(call: types.CallbackQuery):
 async def admin_trial_toggle(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    cfg = get_trial_config()
+    cfg = await run_db(get_trial_config)
     new_val = not cfg[0]
-    update_trial_config(is_enabled=new_val)
+    await run_db(update_trial_config, is_enabled=new_val)
     await call.answer("✅ فعال شد" if new_val else "❌ غیرفعال شد", show_alert=True)
-    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb())
+    cfg = await run_db(get_trial_config)
+    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb(cfg))
 
 
 @router.callback_query(F.data == "admin:trial_toggle_ref")
 async def admin_trial_toggle_ref(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    cfg = get_trial_config()
+    cfg = await run_db(get_trial_config)
     new_val = not cfg[3]
-    update_trial_config(require_referral=new_val)
+    await run_db(update_trial_config, require_referral=new_val)
     await call.answer("✅ نیاز به رفرال فعال شد" if new_val else "❌ نیاز به رفرال حذف شد", show_alert=True)
-    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb())
+    cfg = await run_db(get_trial_config)
+    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb(cfg))
 
 
 @router.callback_query(F.data.startswith("admin:trial_set:"))
@@ -645,7 +648,7 @@ async def admin_trial_save_field(message: types.Message, state: FSMContext):
             return
         value = int(raw)
 
-    update_trial_config(**{field: value})
+    await run_db(update_trial_config, **{field: value})
     await state.clear()
     await message.answer("✅ تنظیمات تست ذخیره شد.", reply_markup=get_kb(message.from_user.id))
 
@@ -654,8 +657,8 @@ async def admin_trial_save_field(message: types.Message, state: FSMContext):
 async def admin_trial_phones(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    overrides = get_all_phone_overrides()
-    cfg = get_trial_config()
+    overrides = await run_db(get_all_phone_overrides)
+    cfg = await run_db(get_trial_config)
     default_max = cfg[5]
     sep = "─" * 22
     text = f"📱 مدیریت شماره‌ها\n{sep}\n🔢 تعداد پیش‌فرض: {default_max} بار\n{sep}\n"
@@ -696,7 +699,7 @@ async def admin_trial_phone_input(message: types.Message, state: FSMContext):
     mode = data.get("override_mode")
 
     if mode == "delete":
-        delete_phone_override(phone)
+        await run_db(delete_phone_override, phone)
         await state.clear()
         await message.answer(
             f"✅ Override شماره {phone} حذف شد.",
@@ -706,7 +709,7 @@ async def admin_trial_phone_input(message: types.Message, state: FSMContext):
 
     if mode == "clear_uses":
         from db import clear_trial_uses
-        clear_trial_uses(phone)
+        await run_db(clear_trial_uses, phone)
         await state.clear()
         await message.answer(
             f"✅ تاریخچه تست شماره {phone} ریست شد.\n"
@@ -728,7 +731,7 @@ async def admin_trial_phone_max_uses(message: types.Message, state: FSMContext):
     data = await state.get_data()
     phone = data["override_phone"]
     max_uses = int(message.text)
-    set_phone_max_uses(phone, max_uses)
+    await run_db(set_phone_max_uses, phone, max_uses)
     await state.clear()
     await message.answer(
         f"✅ تنظیم شد!\n📱 {phone}: حداکثر {max_uses} بار تست",
@@ -763,7 +766,7 @@ async def admin_trial_clear_uses_start(call: types.CallbackQuery, state: FSMCont
 async def admin_trial_uses(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    uses = get_all_trial_uses()
+    uses = await run_db(get_all_trial_uses)
     if not uses:
         text = "📋 هنوز هیچ تستی گرفته نشده."
     else:
@@ -784,7 +787,8 @@ async def admin_referral_menu(call: types.CallbackQuery):
         return
     if not await require_pro(call, "رفرال"):
         return
-    await call.message.edit_text("🔗 تنظیمات سیستم رفرال:", reply_markup=admin_referral_menu_kb())
+    cfg = await run_db(get_referral_config)
+    await call.message.edit_text("🔗 تنظیمات سیستم رفرال:", reply_markup=admin_referral_menu_kb(cfg))
     await call.answer()
 
 
@@ -792,11 +796,12 @@ async def admin_referral_menu(call: types.CallbackQuery):
 async def admin_ref_toggle(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    cfg = get_referral_config()
+    cfg = await run_db(get_referral_config)
     new_val = not cfg[0]
-    update_referral_config(is_enabled=new_val)
+    await run_db(update_referral_config, is_enabled=new_val)
     await call.answer("✅ رفرال فعال شد" if new_val else "❌ رفرال غیرفعال شد", show_alert=True)
-    await call.message.edit_text("🔗 تنظیمات سیستم رفرال:", reply_markup=admin_referral_menu_kb())
+    cfg = await run_db(get_referral_config)
+    await call.message.edit_text("🔗 تنظیمات سیستم رفرال:", reply_markup=admin_referral_menu_kb(cfg))
 
 
 @router.callback_query(F.data.startswith("admin:ref_set:"))
@@ -836,7 +841,7 @@ async def admin_ref_save_field(message: types.Message, state: FSMContext):
             return
         value = int(raw)
 
-    update_referral_config(**{field: value})
+    await run_db(update_referral_config, **{field: value})
     await state.clear()
     await message.answer("✅ تنظیمات رفرال ذخیره شد.", reply_markup=get_kb(message.from_user.id))
 
@@ -845,14 +850,20 @@ async def admin_ref_save_field(message: types.Message, state: FSMContext):
 async def admin_ref_history(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT referrer_id, referred_id, reward_type, amount, created_at
-        FROM referral_rewards ORDER BY created_at DESC LIMIT 50
-    """)
-    rows = cur.fetchall()
-    conn.close()
+
+    def _get_ref_rewards():
+        from db import connect as _conn
+        conn = _conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT referrer_id, referred_id, reward_type, amount, created_at
+            FROM referral_rewards ORDER BY created_at DESC LIMIT 50
+        """)
+        rows = cur.fetchall()
+        conn.close()
+        return rows
+
+    rows = await run_db(_get_ref_rewards)
 
     if not rows:
         text = "📋 هنوز هیچ پاداش رفرالی ثبت نشده."
@@ -889,7 +900,7 @@ async def admin_channels(call: types.CallbackQuery):
         return
     if not await require_pro(call, "جوین اجباری"):
         return
-    channels = get_all_channels()
+    channels = await run_db(get_all_channels)
     text = "📢 کانال‌های اجباری:\n✅=فعال | ❌=غیرفعال\n\n"
     if not channels:
         text += "هیچ کانالی ثبت نشده."
@@ -902,9 +913,9 @@ async def admin_ch_toggle(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     ch_id = int(call.data.split(":")[2])
-    new_status = toggle_channel(ch_id)
+    new_status = await run_db(toggle_channel, ch_id)
     await call.answer("✅ فعال شد" if new_status else "❌ غیرفعال شد", show_alert=True)
-    channels = get_all_channels()
+    channels = await run_db(get_all_channels)
     await call.message.edit_text(
         "📢 کانال‌های اجباری:\n✅=فعال | ❌=غیرفعال\n\n",
         reply_markup=channels_kb(channels)
@@ -916,9 +927,9 @@ async def admin_ch_del(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     ch_id = int(call.data.split(":")[2])
-    delete_channel(ch_id)
+    await run_db(delete_channel, ch_id)
     await call.answer("🗑 کانال حذف شد", show_alert=True)
-    channels = get_all_channels()
+    channels = await run_db(get_all_channels)
     text = "📢 کانال‌های اجباری:\n✅=فعال | ❌=غیرفعال\n\n"
     if not channels:
         text += "هیچ کانالی ثبت نشده."
@@ -978,7 +989,7 @@ async def admin_ch_title_input(message: types.Message, state: FSMContext):
 async def admin_ch_invite_input(message: types.Message, state: FSMContext):
     invite = None if message.text.strip() == "/skip" else message.text.strip()
     data = await state.get_data()
-    cid = add_channel(
+    cid = await run_db(add_channel, 
         data["channel_id"],
         data.get("channel_username", ""),
         data.get("channel_title", data["channel_id"]),
@@ -1002,9 +1013,14 @@ from db import get_panel_config, update_panel_config
 from panel import test_panel_connection, get_inbound_list
 
 
-def panel_config_kb():
-    cfg = get_panel_config()
-    url, auth_type, username, password, api_key, inbound_id, panel_path = cfg or (None,)*7
+def panel_config_kb(cfg):
+    if not cfg:
+        url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path = (None,)*9
+    elif len(cfg) >= 9:
+        url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path = cfg
+    else:
+        url, auth_type, username, password, api_key, inbound_id, panel_path = cfg[:7]
+        sub_port, sub_path = None, "sub"
     auth_label = "👤 یوزر/پس" if auth_type == "userpass" else "🔑 API Key"
     connected = "✅" if url else "❌"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -1015,6 +1031,8 @@ def panel_config_kb():
         [InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data="admin:panel_set:api_key")],
         [InlineKeyboardButton(text=f"📡 Inbound ID: {inbound_id or '—'}", callback_data="admin:panel_set:inbound_id")],
         [InlineKeyboardButton(text=f"📂 Panel Path: {panel_path or '/'}", callback_data="admin:panel_set:panel_path")],
+        [InlineKeyboardButton(text=f"🔌 پورت لینک Sub: {sub_port or 'همان پنل'}", callback_data="admin:panel_set:sub_port")],
+        [InlineKeyboardButton(text=f"📎 Sub Path: /{sub_path or 'sub'}", callback_data="admin:panel_set:sub_path")],
         [InlineKeyboardButton(text="📋 لیست Inbound ها", callback_data="admin:panel_inbounds")],
         [InlineKeyboardButton(text="🔌 تست اتصال", callback_data="admin:panel_test")],
         [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
@@ -1025,7 +1043,8 @@ def panel_config_kb():
 async def admin_panel_config(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    await call.message.edit_text("⚙️ تنظیمات پنل VPN:", reply_markup=panel_config_kb())
+    cfg = await run_db(get_panel_config)
+    await call.message.edit_text("⚙️ تنظیمات پنل VPN:", reply_markup=panel_config_kb(cfg))
     await call.answer()
 
 
@@ -1033,13 +1052,16 @@ async def admin_panel_config(call: types.CallbackQuery):
 async def admin_panel_toggle_auth(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    cfg = get_panel_config()
+    cfg = await run_db(get_panel_config)
     new_auth = "apikey" if cfg[1] == "userpass" else "userpass"
     if new_auth == "apikey" and not await require_pro(call, "اتصال با API Key"):
         return
-    update_panel_config(auth_type=new_auth)
+    await run_db(update_panel_config, auth_type=new_auth)
+    from panel import invalidate_panel_cache
+    invalidate_panel_cache()
     await call.answer("🔑 API Key" if new_auth == "apikey" else "👤 یوزر/پس", show_alert=True)
-    await call.message.edit_text("⚙️ تنظیمات پنل VPN:", reply_markup=panel_config_kb())
+    cfg = await run_db(get_panel_config)
+    await call.message.edit_text("⚙️ تنظیمات پنل VPN:", reply_markup=panel_config_kb(cfg))
 
 
 @router.callback_query(F.data.startswith("admin:panel_set:"))
@@ -1056,6 +1078,8 @@ async def admin_panel_set_field(call: types.CallbackQuery, state: FSMContext):
         "api_key":     "🔑 API Key پنل رو وارد کن:",
         "inbound_id":  "📡 شماره Inbound ID رو وارد کن (عدد):",
         "panel_path":  "📂 Panel Path رو وارد کن (پیش‌فرض خالی):\nمثال: /panel یا /skip برای خالی:",
+        "sub_port":    "🔌 پورت لینک Sub رو وارد کن:\nمثال: 2096 (یا /skip اگه همون پورت پنله):",
+        "sub_path":    "📎 Sub Path رو وارد کن (پیش‌فرض: sub):\nمثال: sub یا subscription:",
     }
     await call.message.answer(prompts.get(field, "مقدار جدید رو وارد کن:"))
     await call.answer()
@@ -1074,12 +1098,43 @@ async def admin_panel_save_field(message: types.Message, state: FSMContext):
         value = int(raw)
     elif field == "panel_path":
         value = "" if raw == "/skip" else raw
+    elif field == "sub_port":
+        if raw == "/skip":
+            value = None
+        elif raw.isdigit():
+            value = int(raw)
+        else:
+            await message.answer("❌ فقط عدد یا /skip:")
+            return
+    elif field == "sub_path":
+        value = "sub" if raw == "/skip" else raw.strip("/")
     elif field == "panel_url":
-        value = raw.rstrip("/")
+        # اگه URL شامل path بود (مثلاً https://domain:2083/abcXYZ) خودکار جدا کن
+        from urllib.parse import urlparse
+        parsed = urlparse(raw.rstrip("/"))
+        # base: scheme + host + port
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        path = parsed.path.rstrip("/")
+        value = base
+        # اگه path داشت، panel_path رو هم آپدیت کن
+        if path:
+            await run_db(update_panel_config, panel_path=path)
+            await message.answer(
+                f"✅ آدرس ذخیره شد.\n"
+                f"🌐 Base URL: {base}\n"
+                f"📂 Panel Path: {path}\n"
+                f"(panel_path هم خودکار تنظیم شد)"
+            )
+            from panel import invalidate_panel_cache
+            invalidate_panel_cache()
+            await state.clear()
+            return
     else:
         value = raw
 
-    update_panel_config(**{field: value})
+    await run_db(update_panel_config, **{field: value})
+    from panel import invalidate_panel_cache
+    invalidate_panel_cache()
     await state.clear()
     await message.answer("✅ ذخیره شد.", reply_markup=get_kb(message.from_user.id))
 
@@ -1090,9 +1145,10 @@ async def admin_panel_test(call: types.CallbackQuery):
         return
     await call.message.edit_text("🔌 در حال تست اتصال...")
     ok, msg = await test_panel_connection()
+    cfg = await run_db(get_panel_config)
     await call.message.edit_text(
         f"{'✅' if ok else '❌'} {msg}",
-        reply_markup=panel_config_kb()
+        reply_markup=panel_config_kb(cfg)
     )
     await call.answer()
 
@@ -1159,7 +1215,7 @@ async def admin_partners(call: types.CallbackQuery):
         return
     if not await require_pro(call, "همکاران"):
         return
-    partners = get_all_partners()
+    partners = await run_db(get_all_partners)
     active = sum(1 for p in partners if p[4] == "active")
     text = f"🤝 همکاران ({active} فعال از {len(partners)}):\n✅=فعال | ❌=غیرفعال\n\n"
     if not partners:
@@ -1173,13 +1229,13 @@ async def admin_partner_detail(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     user_id = int(call.data.split(":")[2])
-    p = get_partner(user_id)
+    p = await run_db(get_partner, user_id)
     if not p:
         await call.answer("❌ یافت نشد", show_alert=True)
         return
     pid, uid, phone, desc, status, added_at = p
-    bal = get_balance(uid)
-    purchases = get_user_purchases(uid)
+    bal = await run_db(get_balance, uid)
+    purchases = await run_db(get_user_purchases, uid)
     sep = "─" * 22
     text = (
         f"🤝 جزئیات همکار\n{sep}\n"
@@ -1200,7 +1256,7 @@ async def admin_partner_purchases(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     user_id = int(call.data.split(":")[2])
-    purchases = get_user_purchases(user_id)
+    purchases = await run_db(get_user_purchases, user_id)
     if not purchases:
         await call.answer("هنوز خریدی نداشته", show_alert=True)
         return
@@ -1221,13 +1277,19 @@ async def admin_partner_delete(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     user_id = int(call.data.split(":")[2])
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM partners WHERE user_id=%s", (user_id,))
-    conn.commit()
-    conn.close()
+
+    def _delete_partner(uid):
+        from db import connect as _conn
+        conn = _conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM partners WHERE user_id=%s", (uid,))
+        cur.execute("DELETE FROM partner_requests WHERE user_id=%s", (uid,))
+        conn.commit()
+        conn.close()
+
+    await run_db(_delete_partner, user_id)
     await call.answer("🗑 همکار حذف شد", show_alert=True)
-    partners = get_all_partners()
+    partners = await run_db(get_all_partners)
     active = sum(1 for p in partners if p[4] == "active")
     text = f"🤝 همکاران ({active} فعال از {len(partners)}):\n\n"
     if not partners:
@@ -1240,17 +1302,17 @@ async def admin_partner_toggle(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     user_id = int(call.data.split(":")[2])
-    p = get_partner(user_id)
+    p = await run_db(get_partner, user_id)
     if not p:
         await call.answer("❌ یافت نشد", show_alert=True)
         return
     if p[4] == "active":
-        remove_partner(user_id)
+        await run_db(remove_partner, user_id)
         await call.answer("❌ غیرفعال شد", show_alert=True)
     else:
-        add_partner(user_id, p[2], p[3])
+        await run_db(add_partner, user_id, p[2], p[3])
         await call.answer("✅ فعال شد", show_alert=True)
-    p = get_partner(user_id)
+    p = await run_db(get_partner, user_id)
     pid, uid, phone, desc, status, added_at = p
     sep = "─" * 22
     text = (
@@ -1288,7 +1350,7 @@ async def admin_partner_add_phone(message: types.Message, state: FSMContext, bot
     phone = None if message.text == "/skip" else normalize_phone(message.text)
     data = await state.get_data()
     uid = data["target_uid"]
-    add_partner(uid, phone)
+    await run_db(add_partner, uid, phone)
     await state.clear()
     try:
         await bot.send_message(
@@ -1313,14 +1375,18 @@ def _vis_label(v):
         return "🤝 همکاران"
     if v == "users":
         return "👤 کاربران عادی"
+    if v == "custom":
+        return "🎯 سفارشی (لیست)"
     return "👥 همه"
 
 def _vis_next(v):
-    # چرخش: all → partners → users → all
+    # چرخش: all → partners → users → custom → all
     if v in ("all", None):
         return "partners"
     if v == "partners":
         return "users"
+    if v == "users":
+        return "custom"
     return "all"
 
 
@@ -1334,12 +1400,21 @@ def category_visibility_kb(categories):
                 callback_data=f"admin:cat_vis:{cid}"
             )
         ])
+        if visibility == "custom":
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"   └ 👥 مدیریت لیست دسترسی «{name}»",
+                    callback_data=f"admin:cat_custom_users:{cid}"
+                )
+            ])
     buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def _get_cats_for_vis():
-    conn = db_connect()
+    """sync helper — فقط از run_db صدا زده بشه"""
+    from db import connect as _conn
+    conn = _conn()
     cur = conn.cursor()
     cur.execute("SELECT id, name, emoji, is_active, sort_order, visibility FROM categories ORDER BY sort_order, id")
     cats = cur.fetchall()
@@ -1351,11 +1426,11 @@ def _get_cats_for_vis():
 async def admin_cat_visibility(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    cats = _get_cats_for_vis()
+    cats = await run_db(_get_cats_for_vis)
     await call.message.edit_text(
         "👁 دسترسی دسته‌بندی‌ها:\n"
-        "👥 همه | 🤝 همکاران | 👤 کاربران عادی\n"
-        "کلیک کن تا بچرخونیش:",
+        "👥 همه | 🤝 همکاران | 👤 کاربران عادی | 🎯 سفارشی\n"
+        "روی نام دسته کلیک کن تا بچرخونیش:",
         reply_markup=category_visibility_kb(cats)
     )
     await call.answer()
@@ -1366,20 +1441,442 @@ async def admin_toggle_cat_visibility(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     cat_id = int(call.data.split(":")[2])
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute("SELECT visibility FROM categories WHERE id=%s", (cat_id,))
-    r = cur.fetchone()
-    conn.close()
-    current = r[0] if r else "all"
+
+    def _get_visibility(cid):
+        from db import connect as _conn
+        conn = _conn()
+        cur = conn.cursor()
+        cur.execute("SELECT visibility FROM categories WHERE id=%s", (cid,))
+        r = cur.fetchone()
+        conn.close()
+        return r[0] if r else "all"
+
+    current = await run_db(_get_visibility, cat_id)
     new_vis = _vis_next(current)
     from db import set_category_visibility
-    set_category_visibility(cat_id, new_vis)
-    await call.answer(_vis_label(new_vis), show_alert=True)
-    cats = _get_cats_for_vis()
+    await run_db(set_category_visibility, cat_id, new_vis)
+
+    msg = _vis_label(new_vis)
+    if new_vis == "custom":
+        msg += "\nحالا از زیرمنوی «مدیریت لیست دسترسی» کاربرها رو اضافه کن."
+    await call.answer(msg, show_alert=True)
+
+    cats = await run_db(_get_cats_for_vis)
     await call.message.edit_text(
         "👁 دسترسی دسته‌بندی‌ها:\n"
-        "👥 همه | 🤝 همکاران | 👤 کاربران عادی\n"
-        "کلیک کن تا بچرخونیش:",
+        "👥 همه | 🤝 همکاران | 👤 کاربران عادی | 🎯 سفارشی\n"
+        "روی نام دسته کلیک کن تا بچرخونیش:",
         reply_markup=category_visibility_kb(cats)
     )
+
+
+# ================================================================
+# مدیریت لیست دسترسی سفارشی (visibility = custom)
+# ================================================================
+
+from db import (
+    add_category_custom_user, remove_category_custom_user,
+    get_category_custom_users, find_user_id_by_phone,
+)
+from states import AdminCustomAccessAdd, AdminCustomAccessRemove
+
+
+def custom_access_kb(cat_id, users):
+    buttons = []
+    for uid, phone in users:
+        label = f"🆔 {uid}"
+        if phone:
+            label += f" | 📱 {phone}"
+        buttons.append([
+            InlineKeyboardButton(text=label, callback_data=f"admin:cat_custom_del:{cat_id}:{uid}")
+        ])
+    buttons.append([InlineKeyboardButton(text="➕ افزودن کاربر", callback_data=f"admin:cat_custom_add:{cat_id}")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:cat_visibility")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.callback_query(F.data.startswith("admin:cat_custom_users:"))
+async def admin_cat_custom_users(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cat_id = int(call.data.split(":")[2])
+    users = await run_db(get_category_custom_users, cat_id)
+    text = f"👥 لیست دسترسی سفارشی (دسته #{cat_id}):\n\n"
+    if not users:
+        text += "هیچ کاربری اضافه نشده.\nروی «افزودن کاربر» بزن (می‌تونی آیدی عددی یا شماره وارد کنی)."
+    await call.message.edit_text(text, reply_markup=custom_access_kb(cat_id, users))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:cat_custom_add:"))
+async def admin_cat_custom_add_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    cat_id = int(call.data.split(":")[2])
+    await state.set_state(AdminCustomAccessAdd.waiting_input)
+    await state.update_data(cat_id=cat_id)
+    await call.message.answer(
+        "👤 آیدی عددی یا شماره موبایل کاربر(ها) رو وارد کن:\n\n"
+        "می‌تونی چند مورد رو هر خط یکی بفرستی.\n"
+        "مثال:\n"
+        "933988915\n"
+        "09123456789\n\n"
+        "⚠️ نکته: اگه شماره وارد کنی، کاربر باید قبلاً یه بار با ربات تعامل داشته و شماره‌اش ثبت شده باشه (مثلاً از تست رایگان)."
+    )
+    await call.answer()
+
+
+@router.message(AdminCustomAccessAdd.waiting_input)
+async def admin_cat_custom_add_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    cat_id = data["cat_id"]
+    lines = [l.strip() for l in message.text.strip().splitlines() if l.strip()]
+
+    added = []
+    not_found = []
+
+    for line in lines:
+        if line.isdigit() and len(line) >= 6 and not line.startswith("09"):
+            # آیدی عددی تلگرام
+            uid = int(line)
+            await run_db(add_category_custom_user, cat_id, uid)
+            added.append(str(uid))
+        elif line.startswith("09") and len(line) == 11:
+            # شماره موبایل — پیدا کردن آیدی
+            uid = await run_db(find_user_id_by_phone, line)
+            if uid:
+                await run_db(add_category_custom_user, cat_id, uid)
+                added.append(f"{line} → {uid}")
+            else:
+                not_found.append(line)
+        else:
+            not_found.append(line)
+
+    await state.clear()
+
+    text = ""
+    if added:
+        text += "✅ اضافه شدن:\n" + "\n".join(added) + "\n\n"
+    if not_found:
+        text += "❌ پیدا نشدن یا فرمت اشتباه:\n" + "\n".join(not_found)
+
+    await message.answer(text or "هیچی پردازش نشد.", reply_markup=get_kb(message.from_user.id))
+
+
+@router.callback_query(F.data.startswith("admin:cat_custom_del:"))
+async def admin_cat_custom_del(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    parts = call.data.split(":")
+    cat_id = int(parts[2])
+    user_id = int(parts[3])
+    await run_db(remove_category_custom_user, cat_id, user_id)
+    await call.answer("🗑 حذف شد", show_alert=True)
+    users = await run_db(get_category_custom_users, cat_id)
+    text = f"👥 لیست دسترسی سفارشی (دسته #{cat_id}):\n\n"
+    if not users:
+        text += "هیچ کاربری اضافه نشده."
+    await call.message.edit_text(text, reply_markup=custom_access_kb(cat_id, users))
+
+
+# ================================================================
+# CUSTOM PLAN MANAGEMENT (پلن دلخواه)
+# ================================================================
+
+from db import (
+    add_category_custom_flag, get_custom_groups, get_custom_group,
+    add_custom_group, update_custom_group, toggle_custom_group, delete_custom_group,
+)
+from states import AdminCustomCategory, AdminAddCustomGroup, AdminEditCustomGroup
+
+
+@router.callback_query(F.data == "admin:custom_plans")
+async def admin_custom_plans_menu(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+
+    def _get_custom_cats():
+        from db import connect as _conn
+        conn = _conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, emoji, is_active FROM categories WHERE is_custom=TRUE ORDER BY sort_order, id")
+        rows = cur.fetchall()
+        conn.close()
+        return rows
+
+    cats = await run_db(_get_custom_cats)
+    buttons = []
+    for c in cats:
+        cid, name, emoji, is_active = c
+        st = "✅" if is_active else "❌"
+        buttons.append([InlineKeyboardButton(text=f"{st} {emoji} {name}", callback_data=f"admin:custom_cat_detail:{cid}")])
+    buttons.append([InlineKeyboardButton(text="➕ افزودن دسته‌بندی پلن دلخواه", callback_data="admin:custom_cat_add")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
+
+    text = "🎛 مدیریت پلن‌های دلخواه:\n\n"
+    if not cats:
+        text += "هیچ دسته‌بندی پلن دلخواهی نساختی."
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:custom_cat_add")
+async def admin_custom_cat_add_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    if not await check_free_category_limit(call):
+        return
+    await state.set_state(AdminCustomCategory.name)
+    await call.message.answer(
+        "🎛 نام دسته‌بندی پلن دلخواه رو وارد کن:\n"
+        "(مثلاً: پلن دلخواه)"
+    )
+    await call.answer()
+
+
+@router.message(AdminCustomCategory.name)
+async def admin_custom_cat_add_save(message: types.Message, state: FSMContext):
+    name = message.text.strip()
+    cid = await run_db(add_category, name, "🎛", True)
+    await state.clear()
+    await message.answer(
+        f"✅ دسته‌بندی پلن دلخواه ساخته شد!\n🎛 {name}\n🔑 ID: {cid}\n\n"
+        f"حالا باید زیرگروه‌هاش رو اضافه کنی.",
+        reply_markup=get_kb(message.from_user.id)
+    )
+
+
+def custom_cat_detail_kb(cat_id, groups):
+    buttons = []
+    for g in groups:
+        gid, name, emoji, ppg, ppd, min_gb, max_gb, min_days, max_days, ibids, is_active = g
+        st = "✅" if is_active else "❌"
+        buttons.append([InlineKeyboardButton(text=f"{st} {emoji} {name}", callback_data=f"admin:custom_grp_detail:{gid}")])
+    buttons.append([InlineKeyboardButton(text="➕ افزودن زیرگروه", callback_data=f"admin:custom_grp_add:{cat_id}")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:custom_plans")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.callback_query(F.data.startswith("admin:custom_cat_detail:"))
+async def admin_custom_cat_detail(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cat_id = int(call.data.split(":")[2])
+    cat = await run_db(get_category, cat_id)
+    if not cat:
+        await call.answer("❌ پیدا نشد", show_alert=True)
+        return
+    groups = await run_db(get_custom_groups, cat_id, False)
+    text = f"🎛 {cat[1]}\n\nزیرگروه‌ها:\n"
+    if not groups:
+        text += "هیچ زیرگروهی ساخته نشده."
+    await call.message.edit_text(text, reply_markup=custom_cat_detail_kb(cat_id, groups))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:custom_grp_add:"))
+async def admin_custom_grp_add_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    cat_id = int(call.data.split(":")[2])
+    await state.set_state(AdminAddCustomGroup.name)
+    await state.update_data(cat_id=cat_id)
+    await call.message.answer("📝 نام زیرگروه رو وارد کن:\n(مثلاً: 🇩🇪 اروپا)")
+    await call.answer()
+
+
+@router.message(AdminAddCustomGroup.name)
+async def admin_custom_grp_add_name(message: types.Message, state: FSMContext):
+    await state.update_data(grp_name=message.text.strip())
+    await state.set_state(AdminAddCustomGroup.emoji)
+    await message.answer("😀 ایموجی رو وارد کن (یا /skip برای پیش‌فرض 🌍):")
+
+
+@router.message(AdminAddCustomGroup.emoji)
+async def admin_custom_grp_add_emoji(message: types.Message, state: FSMContext):
+    emoji = "🌍" if message.text.strip() == "/skip" else message.text.strip()
+    data = await state.get_data()
+    gid = await run_db(add_custom_group, data["cat_id"], data["grp_name"], emoji)
+    await state.clear()
+    await message.answer(
+        f"✅ زیرگروه ساخته شد!\n{emoji} {data['grp_name']}\n🔑 ID: {gid}\n\n"
+        f"⚠️ یادت نره قیمت‌ها، حداقل/حداکثر و inbound ها رو از جزئیات زیرگروه تنظیم کنی.",
+        reply_markup=get_kb(message.from_user.id)
+    )
+
+
+def custom_grp_detail_kb(group_id, cat_id, is_active):
+    toggle_text = "❌ غیرفعال کردن" if is_active else "✅ فعال کردن"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 نام/ایموجی", callback_data=f"admin:custom_grp_edit:{group_id}:name")],
+        [InlineKeyboardButton(text="💰 قیمت هر گیگ", callback_data=f"admin:custom_grp_edit:{group_id}:price_per_gb")],
+        [InlineKeyboardButton(text="💰 قیمت هر روز", callback_data=f"admin:custom_grp_edit:{group_id}:price_per_day")],
+        [InlineKeyboardButton(text="📶 حداقل/حداکثر گیگ", callback_data=f"admin:custom_grp_edit:{group_id}:gb_range")],
+        [InlineKeyboardButton(text="⏳ حداقل/حداکثر روز", callback_data=f"admin:custom_grp_edit:{group_id}:days_range")],
+        [InlineKeyboardButton(text="📡 Inbound IDs", callback_data=f"admin:custom_grp_edit:{group_id}:inbound_ids")],
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"admin:custom_grp_toggle:{group_id}")],
+        [InlineKeyboardButton(text="🗑 حذف زیرگروه", callback_data=f"admin:custom_grp_del:{group_id}")],
+        [InlineKeyboardButton(text="🔙 برگشت", callback_data=f"admin:custom_cat_detail:{cat_id}")],
+    ])
+
+
+def _format_group_detail(g):
+    gid, cat_id, name, emoji, ppg, ppd, min_gb, max_gb, min_days, max_days, ibids, is_active = g
+    sep = "─" * 22
+    return (
+        f"{emoji} {name}\n{sep}\n"
+        f"💰 قیمت هر گیگ: {ppg:,} تومان\n"
+        f"💰 قیمت هر روز: {ppd:,} تومان\n"
+        f"📶 محدوده حجم: {min_gb:g} تا {max_gb:g} گیگ\n"
+        f"⏳ محدوده روز: {min_days} تا {max_days} روز\n"
+        f"📡 Inbound IDs: {ibids or 'همه inbound های فعال'}\n"
+        f"🔘 وضعیت: {'✅ فعال' if is_active else '❌ غیرفعال'}\n"
+    )
+
+
+@router.callback_query(F.data.startswith("admin:custom_grp_detail:"))
+async def admin_custom_grp_detail(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    group_id = int(call.data.split(":")[2])
+    g = await run_db(get_custom_group, group_id)
+    if not g:
+        await call.answer("❌ پیدا نشد", show_alert=True)
+        return
+    cat_id = g[1]
+    await call.message.edit_text(
+        _format_group_detail(g),
+        reply_markup=custom_grp_detail_kb(group_id, cat_id, g[11])
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:custom_grp_toggle:"))
+async def admin_custom_grp_toggle(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    group_id = int(call.data.split(":")[2])
+    new_status = await run_db(toggle_custom_group, group_id)
+    await call.answer("✅ فعال شد" if new_status else "❌ غیرفعال شد", show_alert=True)
+    g = await run_db(get_custom_group, group_id)
+    if g:
+        await call.message.edit_text(
+            _format_group_detail(g),
+            reply_markup=custom_grp_detail_kb(group_id, g[1], g[11])
+        )
+
+
+@router.callback_query(F.data.startswith("admin:custom_grp_del:"))
+async def admin_custom_grp_del(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    group_id = int(call.data.split(":")[2])
+    g = await run_db(get_custom_group, group_id)
+    cat_id = g[1] if g else None
+    await run_db(delete_custom_group, group_id)
+    await call.answer("🗑 زیرگروه حذف شد", show_alert=True)
+    if cat_id:
+        groups = await run_db(get_custom_groups, cat_id, False)
+        cat = await run_db(get_category, cat_id)
+        text = f"🎛 {cat[1] if cat else ''}\n\nزیرگروه‌ها:\n"
+        if not groups:
+            text += "هیچ زیرگروهی ساخته نشده."
+        await call.message.edit_text(text, reply_markup=custom_cat_detail_kb(cat_id, groups))
+
+
+@router.callback_query(F.data.startswith("admin:custom_grp_edit:"))
+async def admin_custom_grp_edit_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    parts = call.data.split(":")
+    group_id = int(parts[2])
+    field = parts[3]
+    await state.set_state(AdminEditCustomGroup.entering_value)
+    await state.update_data(group_id=group_id, field=field)
+
+    prompts = {
+        "name":          "📝 نام جدید رو وارد کن:",
+        "price_per_gb":  "💰 قیمت هر گیگ رو به تومان وارد کن:",
+        "price_per_day": "💰 قیمت هر روز رو به تومان وارد کن:",
+        "gb_range":      "📶 حداقل و حداکثر گیگ رو با خط فاصله وارد کن:\nمثال: 5-100",
+        "days_range":    "⏳ حداقل و حداکثر روز رو با خط فاصله وارد کن:\nمثال: 7-90",
+        "inbound_ids":   "📡 شماره Inbound ID ها رو با کاما جدا کن:\nمثال: 1,3,5\n(یا /all برای همه inbound های فعال)",
+    }
+    await call.message.answer(prompts.get(field, "مقدار جدید رو وارد کن:"))
+    await call.answer()
+
+
+@router.message(AdminEditCustomGroup.entering_value)
+async def admin_custom_grp_edit_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    group_id = data["group_id"]
+    field = data["field"]
+    raw = message.text.strip()
+
+    if field == "name":
+        await run_db(update_custom_group, group_id, "name", raw)
+        await state.clear()
+        await message.answer("✅ نام آپدیت شد.", reply_markup=get_kb(message.from_user.id))
+        return
+
+    if field in ("price_per_gb", "price_per_day"):
+        if not raw.isdigit():
+            await message.answer("❌ فقط عدد:")
+            return
+        await run_db(update_custom_group, group_id, field, int(raw))
+        await state.clear()
+        await message.answer("✅ قیمت آپدیت شد.", reply_markup=get_kb(message.from_user.id))
+        return
+
+    if field == "gb_range":
+        if "-" not in raw:
+            await message.answer("❌ فرمت اشتباه. مثال: 5-100")
+            return
+        try:
+            min_v, max_v = raw.split("-")
+            min_v, max_v = float(min_v), float(max_v)
+            if min_v <= 0 or max_v <= min_v:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ اعداد معتبر وارد کن (min-max):")
+            return
+        await run_db(update_custom_group, group_id, "min_gb", min_v)
+        await run_db(update_custom_group, group_id, "max_gb", max_v)
+        await state.clear()
+        await message.answer("✅ محدوده حجم آپدیت شد.", reply_markup=get_kb(message.from_user.id))
+        return
+
+    if field == "days_range":
+        if "-" not in raw:
+            await message.answer("❌ فرمت اشتباه. مثال: 7-90")
+            return
+        try:
+            min_v, max_v = raw.split("-")
+            min_v, max_v = int(min_v), int(max_v)
+            if min_v <= 0 or max_v <= min_v:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ اعداد صحیح معتبر وارد کن (min-max):")
+            return
+        await run_db(update_custom_group, group_id, "min_days", min_v)
+        await run_db(update_custom_group, group_id, "max_days", max_v)
+        await state.clear()
+        await message.answer("✅ محدوده روز آپدیت شد.", reply_markup=get_kb(message.from_user.id))
+        return
+
+    if field == "inbound_ids":
+        if raw == "/all":
+            value = ""
+        else:
+            ids = [x.strip() for x in raw.split(",") if x.strip().isdigit()]
+            if not ids:
+                await message.answer("❌ فرمت اشتباه. مثال: 1,3,5 یا /all")
+                return
+            value = ",".join(ids)
+        await run_db(update_custom_group, group_id, "inbound_ids", value)
+        await state.clear()
+        await message.answer("✅ Inbound IDs آپدیت شد.", reply_markup=get_kb(message.from_user.id))
+        return
+
+    await state.clear()
+    await message.answer("❌ خطای ناشناخته.", reply_markup=get_kb(message.from_user.id))

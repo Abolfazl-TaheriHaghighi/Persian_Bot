@@ -6,8 +6,9 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import ADMIN_ID, BOT_TOKEN, MASTER_KEY, is_admin
 from db import save_license_key, get_license_key
-from license import verify_license, check_license_from_db, clear_cache, generate_license, get_instance_id
+from license import verify_license, check_license_from_db, warm_cache, clear_cache, generate_license, get_instance_id
 from keyboards import get_kb
+from utils import run_db
 
 router = Router()
 
@@ -44,7 +45,7 @@ async def admin_license_menu(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
 
-    result = check_license_from_db(BOT_TOKEN)
+    result = await run_db(check_license_from_db, BOT_TOKEN)
     sep = "─" * 22
 
     if result.get("permanent"):
@@ -110,8 +111,8 @@ async def license_input_save(message: types.Message, state: FSMContext):
         )
         return
 
-    save_license_key(key)
-    clear_cache()
+    await run_db(save_license_key, key)
+    await run_db(warm_cache, BOT_TOKEN)  # cache رو با DB جدید گرم کن
     await state.clear()
 
     sep = "─" * 22

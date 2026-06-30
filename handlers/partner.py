@@ -13,7 +13,7 @@ from db import (
 )
 from keyboards import get_kb
 from states import PartnerRequest, AdminPartnerApprove, AdminPartnerReject
-from utils import normalize_phone
+from utils import normalize_phone, run_db
 
 router = Router()
 
@@ -26,11 +26,11 @@ router = Router()
 async def partner_request_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
 
-    if is_partner(user_id):
+    if await run_db(is_partner, user_id):
         await message.answer("✅ شما در حال حاضر همکار فعال هستید.")
         return
 
-    if has_pending_request(user_id):
+    if await run_db(has_pending_request, user_id):
         await message.answer("⏳ درخواست همکاری شما در حال بررسی است.\nمنتظر تایید ادمین باش.")
         return
 
@@ -92,7 +92,7 @@ async def partner_description(message: types.Message, state: FSMContext, bot: Bo
     else:
         description = "[فایل]"
 
-    create_partner_request(user_id, phone, description)
+    await run_db(create_partner_request, user_id, phone, description)
     await state.clear()
 
     await message.answer(
@@ -119,11 +119,14 @@ async def partner_description(message: types.Message, state: FSMContext, bot: Bo
         ]
     ])
 
-    await bot.send_message(ADMIN_ID, header)
-    # فوروارد خود پیام کاربر
-    await bot.forward_message(chat_id=ADMIN_ID, from_chat_id=message.chat.id, message_id=message.message_id)
-    # ارسال دکمه‌ها
-    await bot.send_message(ADMIN_ID, "انتخاب کن:", reply_markup=kb)
+    from config import ADMIN_IDS
+    for _aid in ADMIN_IDS:
+        try:
+            await bot.send_message(_aid, header)
+            await bot.forward_message(chat_id=_aid, from_chat_id=message.chat.id, message_id=message.message_id)
+            await bot.send_message(_aid, "انتخاب کن:", reply_markup=kb)
+        except Exception:
+            pass
 
 
 # ================================================================
@@ -153,7 +156,7 @@ async def partner_approve_confirm(message: types.Message, state: FSMContext, bot
     phone = data["phone"]
 
     custom_msg = None if message.text == "/skip" else message.text.strip()
-    add_partner(target_user_id, phone)
+    await run_db(add_partner, target_user_id, phone)
     await state.clear()
 
     # پیام پایه همیشه میره
@@ -194,6 +197,16 @@ async def partner_reject_confirm(message: types.Message, state: FSMContext, bot:
 
     custom_msg = None if message.text == "/skip" else message.text.strip()
     user_text = custom_msg or "❌ متأسفانه درخواست همکاری شما در این مرحله تایید نشد."
+
+    # پاک کردن درخواست از دیتابیس
+    from db import connect as _conn
+    def _delete_request(uid):
+        conn = _conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM partner_requests WHERE user_id=%s", (uid,))
+        conn.commit()
+        conn.close()
+    await run_db(_delete_request, target_user_id)
 
     await state.clear()
 
