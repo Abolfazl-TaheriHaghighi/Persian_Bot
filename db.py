@@ -288,16 +288,15 @@ def init_db():
         )
     """)
 
-    # ---- لایسنس ----
+    # ---- نام‌گذاری خودکار کلاینت‌ها (پیشوند برند + شمارنده‌ی اتمیک) ----
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS license_info (
+        CREATE TABLE IF NOT EXISTS client_naming_config (
             id INTEGER PRIMARY KEY DEFAULT 1,
-            license_key TEXT DEFAULT NULL,
-            activated_at TIMESTAMP DEFAULT NULL,
-            last_checked TIMESTAMP DEFAULT NULL
+            prefix TEXT NOT NULL DEFAULT '',
+            counter INTEGER NOT NULL DEFAULT 0
         )
     """)
-    cur.execute("INSERT INTO license_info (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+    cur.execute("INSERT INTO client_naming_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
 
     conn.commit()
     conn.close()
@@ -913,138 +912,17 @@ def get_referral_rewards_history(user_id, limit=20):
     conn.close()
     return rows
 
-# ================== PANEL CONFIG ==================
-
-def get_panel_config():
-    """برمی‌گردونه (panel_url, auth_type, username, password, api_key, inbound_id, panel_path)"""
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT panel_url, auth_type, username, password, api_key, inbound_id, panel_path FROM panel_config WHERE id=1")
-    r = cur.fetchone()
-    conn.close()
-    return r
-
-def update_panel_config(**kwargs):
-    allowed = {"panel_url", "auth_type", "username", "password", "api_key", "inbound_id", "panel_path"}
-    fields = {k: v for k, v in kwargs.items() if k in allowed}
-    if not fields:
-        return
-    set_clause = ", ".join(f"{k}=%s" for k in fields)
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE panel_config SET {set_clause} WHERE id=1", list(fields.values()))
-    conn.commit()
-    conn.close()
-
-
-# ================== VPN ACCOUNTS ==================
-# (توابع کامل پایین‌تر تعریف شدن، اینجا فقط placeholder بود)
-
-
-# ================== PARTNERS ==================
-
-def is_partner(user_id):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM partners WHERE user_id=%s AND status='active'", (user_id,))
-    r = cur.fetchone()
-    conn.close()
-    return r is not None
-
-def add_partner(user_id, phone=None, description=None):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO partners (user_id, phone, description)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (user_id) DO UPDATE SET status='active', phone=EXCLUDED.phone, description=EXCLUDED.description
-    """, (user_id, phone, description))
-    conn.commit()
-    conn.close()
-
-def remove_partner(user_id):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("UPDATE partners SET status='inactive' WHERE user_id=%s", (user_id,))
-    cur.execute("DELETE FROM partner_requests WHERE user_id=%s", (user_id,))
-    conn.commit()
-    conn.close()
-
-def get_all_partners():
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id, user_id, phone, description, status, added_at FROM partners ORDER BY added_at DESC")
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-def get_partner(user_id):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id, user_id, phone, description, status, added_at FROM partners WHERE user_id=%s", (user_id,))
-    r = cur.fetchone()
-    conn.close()
-    return r
-
-
-# ================== PARTNER REQUESTS ==================
-
-def create_partner_request(user_id, phone, description):
-    conn = connect()
-    cur = conn.cursor()
-    # اگه قبلاً pending داشت، آپدیت کن
-    cur.execute("""
-        INSERT INTO partner_requests (user_id, phone, description, status)
-        VALUES (%s, %s, %s, 'pending')
-        ON CONFLICT DO NOTHING
-    """, (user_id, phone, description))
-    conn.commit()
-    conn.close()
-
-def get_pending_partner_requests():
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, user_id, phone, description, created_at
-        FROM partner_requests WHERE status='pending' ORDER BY created_at
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-def update_partner_request_status(req_id, status):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("UPDATE partner_requests SET status=%s WHERE id=%s", (status, req_id))
-    conn.commit()
-    conn.close()
-
-def get_partner_request(req_id):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id, user_id, phone, description FROM partner_requests WHERE id=%s", (req_id,))
-    r = cur.fetchone()
-    conn.close()
-    return r
-
-def has_pending_request(user_id):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM partner_requests WHERE user_id=%s AND status='pending'", (user_id,))
-    r = cur.fetchone()
-    conn.close()
-    return r is not None
-
 
 # ================== CATEGORY VISIBILITY ==================
 
 def set_category_visibility(cat_id, visibility):
-    """visibility: 'all' یا 'partners'"""
+    """visibility: 'all' | 'partners' | 'users' | 'custom'"""
     conn = connect()
     cur = conn.cursor()
     cur.execute("UPDATE categories SET visibility=%s WHERE id=%s", (visibility, cat_id))
     conn.commit()
     conn.close()
+
 
 def get_categories_for_user(is_partner_user: bool, user_id: int = None):
     """دسته‌بندی‌های قابل نمایش برای کاربر — شامل حالت سفارشی (custom) بر اساس user_id"""
@@ -1093,6 +971,7 @@ def get_all_user_ids():
     conn.close()
     return rows
 
+
 def get_partner_user_ids():
     conn = connect()
     cur = conn.cursor()
@@ -1112,15 +991,18 @@ def get_license_key() -> str | None:
     conn.close()
     return r[0] if r else None
 
+
 def save_license_key(key: str):
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        UPDATE license_info SET license_key=%s, activated_at=NOW(), last_checked=NOW()
+        UPDATE license_info
+        SET license_key=%s, activated_at=NOW(), last_checked=NOW()
         WHERE id=1
     """, (key,))
     conn.commit()
     conn.close()
+
 
 def update_license_checked():
     conn = connect()
@@ -1129,6 +1011,7 @@ def update_license_checked():
     conn.commit()
     conn.close()
 
+
 def get_category_count() -> int:
     conn = connect()
     cur = conn.cursor()
@@ -1136,6 +1019,7 @@ def get_category_count() -> int:
     r = cur.fetchone()
     conn.close()
     return r[0] if r else 0
+
 
 def get_service_count() -> int:
     conn = connect()
@@ -1206,55 +1090,6 @@ def toggle_channel(ch_id):
     return r[0] if r else None
 
 
-# ================== LICENSE ==================
-
-def get_license_key() -> str | None:
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT license_key FROM license_info WHERE id=1")
-    r = cur.fetchone()
-    conn.close()
-    return r[0] if r else None
-
-
-def save_license_key(key: str):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE license_info
-        SET license_key=%s, activated_at=NOW(), last_checked=NOW()
-        WHERE id=1
-    """, (key,))
-    conn.commit()
-    conn.close()
-
-
-def update_license_checked():
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("UPDATE license_info SET last_checked=NOW() WHERE id=1")
-    conn.commit()
-    conn.close()
-
-
-def get_category_count() -> int:
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM categories WHERE is_active=TRUE")
-    r = cur.fetchone()
-    conn.close()
-    return r[0] if r else 0
-
-
-def get_service_count() -> int:
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM services WHERE is_active=TRUE")
-    r = cur.fetchone()
-    conn.close()
-    return r[0] if r else 0
-
-
 # ================== PARTNERS ==================
 
 def is_partner(user_id):
@@ -1275,6 +1110,15 @@ def add_partner(user_id, phone=None, description=None):
         ON CONFLICT (user_id) DO UPDATE
         SET status='active', phone=EXCLUDED.phone, description=EXCLUDED.description
     """, (user_id, phone, description))
+    conn.commit()
+    conn.close()
+
+
+def remove_partner(user_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE partners SET status='inactive' WHERE user_id=%s", (user_id,))
+    cur.execute("DELETE FROM partner_requests WHERE user_id=%s", (user_id,))
     conn.commit()
     conn.close()
 
@@ -1361,39 +1205,13 @@ def has_pending_request(user_id):
     return r is not None
 
 
-# ================== CATEGORY VISIBILITY ==================
-
-def set_category_visibility(cat_id, visibility):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("UPDATE categories SET visibility=%s WHERE id=%s", (visibility, cat_id))
-    conn.commit()
-    conn.close()
-
-
-# ================== BROADCAST ==================
-
-def get_all_user_ids():
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT telegram_id FROM users")
-    rows = [r[0] for r in cur.fetchall()]
-    conn.close()
-    return rows
-
-
-def get_partner_user_ids():
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM partners WHERE status='active'")
-    rows = [r[0] for r in cur.fetchall()]
-    conn.close()
-    return rows
-
-
 # ================== PANEL CONFIG ==================
+# نکته: این نسخه ۹ ستونی است (شامل sub_port و sub_path) — panel.py مستقیماً
+# به این دو ستون برای ساخت لینک subscription وابسته است. نسخه‌ی قدیمی‌تر
+# ۷ ستونی که این دو فیلد را نداشت، به‌عمد حذف شده است.
 
 def get_panel_config():
+    """برمی‌گردونه (panel_url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path)"""
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
@@ -1469,7 +1287,69 @@ def has_previous_purchase(user_id):
     return r[0] > 1
 
 
-# ================== CUSTOM PLAN GROUPS ==================
+# ================== CLIENT NAMING (برند + شمارنده) ==================
+
+def get_client_naming_config():
+    """برمی‌گردونه (prefix, counter) — برای نمایش وضعیت فعلی به ادمین"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT prefix, counter FROM client_naming_config WHERE id=1")
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+
+def set_client_naming_prefix(prefix: str):
+    """تنظیم یا تغییر پیشوند — شمارنده دست نمی‌خوره (فقط با reset_client_naming_counter صفر می‌شه)"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO client_naming_config (id, prefix, counter)
+        VALUES (1, %s, 0)
+        ON CONFLICT (id) DO UPDATE SET prefix=EXCLUDED.prefix
+    """, (prefix,))
+    conn.commit()
+    conn.close()
+
+
+def reset_client_naming_counter():
+    """ریست شمارنده به صفر — احتیاط: اگه کلاینت‌های قبلی با اعداد کوچیک‌تر هنوز فعال باشن، تکراری می‌شن"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE client_naming_config SET counter=0 WHERE id=1")
+    conn.commit()
+    conn.close()
+
+
+def get_next_client_email() -> str:
+    """
+    اتمیک: شمارنده رو یکی افزایش می‌ده و ایمیل کامل کلاینت (prefix + عدد) رو برمی‌گردونه.
+    اگه ادمین هنوز پیشوندی تنظیم نکرده باشه، به فرمت قدیمی (client + timestamp) fallback می‌کنه
+    تا هیچ‌وقت ایمیل خالی/نامعتبر ساخته نشه.
+    یک UPDATE اتمیک (بدون فاصله‌ی زمانی بین خوندن prefix و افزایش counter) از race condition
+    زیر بار همزمان (چند خرید هم‌زمان) جلوگیری می‌کنه.
+    """
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE client_naming_config
+        SET counter = counter + 1
+        WHERE id=1
+        RETURNING prefix, counter
+    """)
+    r = cur.fetchone()
+    conn.commit()
+    conn.close()
+
+    if not r or not r[0]:
+        import time
+        return f"client{int(time.time())}"
+
+    prefix, counter = r
+    return f"{prefix}{counter}"
+
+
+
 
 def add_category_custom_flag(cat_id, is_custom=True):
     conn = connect()

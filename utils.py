@@ -1,4 +1,5 @@
 import asyncio
+import re
 from config import ADMIN_IDS
 
 
@@ -45,3 +46,34 @@ def normalize_phone(phone: str) -> str:
     elif phone.startswith("98") and len(phone) == 12:
         phone = "0" + phone[2:]
     return phone
+
+
+# ================== CLIENT NAMING (برند + شمارنده) ==================
+
+_MAX_PREFIX_LEN = 20
+
+
+def sanitize_naming_prefix(raw: str) -> str:
+    """
+    فقط حروف انگلیسی، عدد، _ و - رو نگه می‌داره؛ فاصله و حروف فارسی/غیرانگلیسی حذف می‌شن
+    (چون این رشته داخل email کلاینت روی پنل VPN و توی URL ساب‌اسکریپشن استفاده می‌شه)
+    اگه بعد از پاکسازی چیزی باقی نمونه یا خیلی طولانی باشه، رشته‌ی خالی برمی‌گردونه (یعنی نامعتبر)
+    """
+    cleaned = raw.strip().replace(" ", "")
+    cleaned = re.sub(r"[^A-Za-z0-9_\-]", "", cleaned)
+    if not cleaned or len(cleaned) > _MAX_PREFIX_LEN:
+        return ""
+    return cleaned
+
+
+async def generate_client_email() -> str:
+    """
+    ساخت ایمیل یکتای کلاینت برای پنل VPN.
+    اگه ادمین از پنل ادمین یک پیشوند تنظیم کرده باشه (مثلاً PersianShield)،
+    خروجی به شکل PersianShield1, PersianShield2, ... خواهد بود.
+    در غیر این صورت به فرمت قدیمی (بر پایه timestamp) fallback می‌کنه.
+    این تابع تنها نقطه‌ی ساخت email است — همه‌ی مسیرهای ساخت اکانت (خرید عادی،
+    تست رایگان، پلن دلخواه) باید از همین استفاده کنن تا شمارنده یکپارچه بمونه.
+    """
+    from db import get_next_client_email
+    return await run_db(get_next_client_email)

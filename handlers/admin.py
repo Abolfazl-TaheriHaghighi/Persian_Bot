@@ -15,24 +15,25 @@ from db import (
     get_all_channels, add_channel, delete_channel, toggle_channel,
     get_all_partners, get_partner, add_partner, remove_partner,
     get_user_purchases,
+    get_client_naming_config, set_client_naming_prefix, reset_client_naming_counter,
     connect as db_connect
 )
 from keyboards import (
     get_kb, back_kb, admin_panel_kb,
     admin_categories_kb, admin_services_kb, admin_svc_detail_kb,
     admin_edit_svc_fields_kb, admin_discounts_kb,
-    admin_trial_menu_kb, admin_referral_menu_kb
+    admin_trial_menu_kb, admin_referral_menu_kb, admin_naming_kb
 )
 from states import (
     AdminAddCategory, AdminAddService, AdminEditService,
     AdminEditBalance, AdminDiscountCode,
     AdminTrialConfig, AdminPhoneOverride, AdminReferralConfig,
-    AdminAddChannel, AdminAddPartnerManual
+    AdminAddChannel, AdminAddPartnerManual, AdminClientNaming
 )
 from pro_guard import (
     require_pro, check_free_category_limit, check_free_service_limit
 )
-from utils import format_data, data_label_short, normalize_phone, run_db
+from utils import format_data, data_label_short, normalize_phone, run_db, sanitize_naming_prefix
 
 router = Router()
 
@@ -1880,3 +1881,100 @@ async def admin_custom_grp_edit_save(message: types.Message, state: FSMContext):
 
     await state.clear()
     await message.answer("❌ خطای ناشناخته.", reply_markup=get_kb(message.from_user.id))
+
+
+# ================================================================
+# CLIENT NAMING (برند + شمارنده)
+# ================================================================
+
+@router.callback_query(F.data == "admin:naming")
+async def admin_naming_menu(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cfg = await run_db(get_client_naming_config)
+    prefix, counter = (cfg[0], cfg[1]) if cfg else ("", 0)
+    sep = "─" * 22
+
+    if prefix:
+        next_number = counter + 1
+        text = (
+            f"🏷 نام‌گذاری خودکار کلاینت‌ها\n{sep}\n"
+            f"📛 پیشوند فعلی: {prefix}\n"
+            f"🔢 آخرین شماره‌ی استفاده‌شده: {counter}\n"
+            f"👀 نمونه‌ی بعدی که ساخته می‌شه: {prefix}{next_number}\n{sep}\n"
+            f"از این پس ایمیل همه‌ی کلاینت‌های جدید (خرید عادی، تست رایگان، پلن دلخواه) "
+            f"بر همین اساس ساخته می‌شن."
+        )
+    else:
+        text = (
+            f"🏷 نام‌گذاری خودکار کلاینت‌ها\n{sep}\n"
+            f"⚠️ هنوز پیشوندی تنظیم نشده.\n"
+            f"در حالت پیش‌فرض، ایمیل‌ها به شکل client + زمان ساخته می‌شن.\n\n"
+            f"با تنظیم یک پیشوند (مثلاً PersianShield)، کلاینت‌های جدید این‌طور نام‌گذاری می‌شن:\n"
+            f"PersianShield1, PersianShield2, ..."
+        )
+
+    await call.message.edit_text(text, reply_markup=admin_naming_kb(cfg))
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:naming_set_prefix")
+async def admin_naming_set_prefix_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminClientNaming.waiting_prefix)
+    await call.message.answer(
+        "🏷 پیشوند برند رو وارد کن.\n"
+        "⚠️ فقط حروف انگلیسی، عدد، _ و - مجازه (فاصله و حروف فارسی حذف می‌شن)\n"
+        "مثال: PersianShield\n\n"
+        "شماره‌ها خودکار بعدش اضافه می‌شن: PersianShield1, PersianShield2, ..."
+    )
+    await call.answer()
+
+
+@router.message(AdminClientNaming.waiting_prefix)
+async def admin_naming_set_prefix_save(message: types.Message, state: FSMContext):
+    raw = message.text.strip()
+    sanitized = sanitize_naming_prefix(raw)
+    if not sanitized:
+        await message.answer(
+            "❌ پیشوند نامعتبره.\n"
+            "فقط حروف انگلیسی، عدد، _ و - مجازه (حداکثر ۲۰ کاراکتر). دوباره وارد کن:"
+        )
+        return
+
+    await run_db(set_client_naming_prefix, sanitized)
+    await state.clear()
+
+    cfg = await run_db(get_client_naming_config)
+    _, counter = cfg if cfg else ("", 0)
+    next_number = counter + 1
+
+    await message.answer(
+        f"✅ پیشوند تنظیم شد: {sanitized}\n"
+        f"👀 نمونه‌ی بعدی که ساخته می‌شه: {sanitized}{next_number}",
+        reply_markup=get_kb(message.from_user.id)
+    )
+
+
+@router.callback_query(F.data == "admin:naming_reset")
+async def admin_naming_reset(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    await run_db(reset_client_naming_counter)
+    await call.answer("✅ شمارنده صفر شد", show_alert=True)
+    cfg = await run_db(get_client_naming_config)
+    prefix, counter = (cfg[0], cfg[1]) if cfg else ("", 0)
+    sep = "─" * 22
+    if prefix:
+        next_number = counter + 1
+        text = (
+            f"🏷 نام‌گذاری خودکار کلاینت‌ها\n{sep}\n"
+            f"📛 پیشوند فعلی: {prefix}\n"
+            f"🔢 آخرین شماره‌ی استفاده‌شده: {counter}\n"
+            f"👀 نمونه‌ی بعدی که ساخته می‌شه: {prefix}{next_number}\n{sep}\n"
+            f"⚠️ اگه کلاینت‌های قبلی با اعداد کوچیک‌تر هنوز فعالن، نام‌های تکراری ساخته می‌شن."
+        )
+    else:
+        text = f"🏷 نام‌گذاری خودکار کلاینت‌ها\n{sep}\n⚠️ هنوز پیشوندی تنظیم نشده."
+    await call.message.edit_text(text, reply_markup=admin_naming_kb(cfg))

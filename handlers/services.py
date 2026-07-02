@@ -18,7 +18,7 @@ from db import (
 from panel import create_vpn_account
 from keyboards import get_kb, categories_kb, services_kb, invoice_kb, back_kb, custom_groups_kb
 from states import ApplyDiscount, CustomPlanOrder
-from utils import format_data, run_db, notify_admins
+from utils import format_data, run_db, notify_admins, generate_client_email
 
 router = Router()
 
@@ -73,7 +73,7 @@ async def show_category_services(call: types.CallbackQuery):
         return
     services = await run_db(get_services_by_category, cat_id)
     bal = await run_db(get_balance, call.from_user.id)
-    cid, cname, cemoji, _ = cat
+    cid, cname, cemoji, is_active, is_custom = cat
 
     if not services:
         await call.message.edit_text(
@@ -262,9 +262,10 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
 
 
 async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tuple, is_trial: bool = False):
-    import time
     sid, name, desc, price, days, data_gb, is_active, cat_name = service
-    email = f"user{user_id}_{int(time.time())}"
+    # ایمیل کلاینت از تابع مرکزی نام‌گذاری ساخته می‌شه (پیشوند برند + شمارنده‌ی اتمیک،
+    # یا fallback به timestamp اگه ادمین هنوز پیشوندی تنظیم نکرده باشه)
+    email = await generate_client_email()
 
     result = await create_vpn_account(user_id, email, days, float(data_gb))
 
@@ -655,10 +656,11 @@ async def custom_plan_confirm(call: types.CallbackQuery, state: FSMContext, bot:
 
 
 async def _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, inbound_ids):
-    import time
     from panel import get_panel_client
 
-    email = f"custom{user_id}_{int(time.time())}"
+    # ایمیل کلاینت از تابع مرکزی نام‌گذاری ساخته می‌شه (همون منطقی که برای خرید عادی و
+    # تست رایگان هم استفاده می‌شه، تا شمارنده‌ی برند برای همه‌ی انواع اکانت یکپارچه بمونه)
+    email = await generate_client_email()
 
     client = await get_panel_client()
     result = None

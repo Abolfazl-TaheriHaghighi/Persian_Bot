@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import aiohttp
 import uuid as uuid_lib
 import time
@@ -9,7 +10,16 @@ from urllib.parse import urlparse
 from db import get_panel_config
 from utils import run_db
 
+logger = logging.getLogger(__name__)
+
 _SESSION_TTL = timedelta(hours=23)
+
+# تایم‌اوت مشخص برای همه‌ی درخواست‌های پنل — بدون این، aiohttp تا ۵ دقیقه
+# منتظر می‌مونه و باعث می‌شه بات کاملاً هنگ به نظر برسه
+_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10, connect=5)
+
+# طول پیش‌نمایش بدنه‌ی پاسخ در لاگ، تا پاسخ‌های بزرگ (مثل HTML کامل) لاگ رو شلوغ نکنن
+_BODY_PREVIEW_LEN = 200
 
 
 class PanelClient:
@@ -50,41 +60,94 @@ class PanelClient:
     async def login(self) -> bool:
         if self.auth_type == "apikey":
             return True
-        async with aiohttp.ClientSession() as session:
-            try:
-                # 3x-ui login با form-data (نه JSON)
+        try:
+            async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
+                # این پنل بدنه‌ی JSON (نه form-data) می‌خواد و فیلد twoFactorCode هم لازم داره
+                # (حتی اگه 2FA غیرفعال باشه، رشته‌ی خالی می‌فرستیم)
                 resp = await session.post(
                     self._url("/login"),
-                    data={"username": self.username, "password": self.password},
+                    json={
+                        "username": self.username,
+                        "password": self.password,
+                        "twoFactorCode": "",
+                    },
+                    headers={"accept": "application/json"},
                     ssl=False
                 )
-                data = await resp.json()
+                try:
+                    data = await resp.json()
+                except aiohttp.ContentTypeError:
+                    body_preview = (await resp.text())[:_BODY_PREVIEW_LEN]
+                    logger.warning(
+                        f"Panel login non-JSON response "
+                        f"(status={resp.status}, content-type={resp.content_type!r}): {body_preview!r}"
+                    )
+                    return False
+
                 if data.get("success"):
                     self.session_cookie = resp.cookies
                     return True
+                logger.warning(f"Panel login rejected by server: {data.get('msg', 'no message')}")
                 return False
-            except Exception:
-                return False
+        except asyncio.TimeoutError:
+            logger.warning(f"Panel login timed out: {self._url('/login')}")
+            return False
+        except aiohttp.ClientError as e:
+            logger.warning(f"Panel login connection error: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"Panel login unexpected error: {e}")
+            return False
 
     async def _get(self, path: str) -> dict | None:
-        async with aiohttp.ClientSession(cookies=self.session_cookie) as session:
-            try:
+        try:
+            async with aiohttp.ClientSession(cookies=self.session_cookie, timeout=_REQUEST_TIMEOUT) as session:
                 resp = await session.get(
                     self._url(path), headers=self._headers(), ssl=False
                 )
-                return await resp.json()
-            except Exception:
-                return None
+                try:
+                    return await resp.json()
+                except aiohttp.ContentTypeError:
+                    body_preview = (await resp.text())[:_BODY_PREVIEW_LEN]
+                    logger.warning(
+                        f"Panel GET non-JSON response on {path} "
+                        f"(status={resp.status}, content-type={resp.content_type!r}): {body_preview!r}"
+                    )
+                    return None
+        except asyncio.TimeoutError:
+            logger.warning(f"Panel GET timed out: {path}")
+            return None
+        except aiohttp.ClientError as e:
+            logger.warning(f"Panel GET connection error on {path}: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Panel GET unexpected error on {path}: {e}")
+            return None
 
     async def _post(self, path: str, payload: dict) -> dict | None:
-        async with aiohttp.ClientSession(cookies=self.session_cookie) as session:
-            try:
+        try:
+            async with aiohttp.ClientSession(cookies=self.session_cookie, timeout=_REQUEST_TIMEOUT) as session:
                 resp = await session.post(
                     self._url(path), headers=self._headers(), json=payload, ssl=False
                 )
-                return await resp.json()
-            except Exception:
-                return None
+                try:
+                    return await resp.json()
+                except aiohttp.ContentTypeError:
+                    body_preview = (await resp.text())[:_BODY_PREVIEW_LEN]
+                    logger.warning(
+                        f"Panel POST non-JSON response on {path} "
+                        f"(status={resp.status}, content-type={resp.content_type!r}): {body_preview!r}"
+                    )
+                    return None
+        except asyncio.TimeoutError:
+            logger.warning(f"Panel POST timed out: {path}")
+            return None
+        except aiohttp.ClientError as e:
+            logger.warning(f"Panel POST connection error on {path}: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Panel POST unexpected error on {path}: {e}")
+            return None
 
     async def get_inbounds(self) -> list:
         data = await self._get("/panel/api/inbounds/list")
@@ -138,7 +201,10 @@ class PanelClient:
         }
 
     async def get_client_stat(self, email: str) -> dict | None:
-        data = await self._get(f"/panel/api/inbounds/getClientTraffics/{email}")
+        # نکته: طبق داکیومنت رسمی API این پنل، مسیر ترافیک کلاینت زیر Clients است
+        # نه Inbounds — مسیر قدیمی /panel/api/inbounds/getClientTraffics/{email}
+        # روی این پنل اصلاً وجود نداره و ۴۰۴ (صفحه‌ی HTML) برمی‌گردونه.
+        data = await self._get(f"/panel/api/clients/traffic/{email}")
         if data and data.get("success"):
             return data.get("obj")
         return None
@@ -215,7 +281,9 @@ async def create_vpn_account(user_id: int, email: str, duration_days: int, data_
     if not client:
         return None
     result = await client.add_client(email, duration_days, data_limit_gb)
-    if result is None:
+    # برای apikey، دوباره لاگین کردن هیچ فرقی نمی‌کنه (سشنی برای رفرش شدن وجود ندارد)
+    # پس فقط برای userpass دوباره تلاش می‌کنیم (شاید سشن منقضی شده باشه)
+    if result is None and client.auth_type != "apikey":
         _cache.invalidate()
         client = await _get_client()
         if client:
@@ -228,7 +296,7 @@ async def get_client_status(email: str) -> dict | None:
     if not client:
         return None
     result = await client.get_client_stat(email)
-    if result is None:
+    if result is None and client.auth_type != "apikey":
         _cache.invalidate()
         client = await _get_client()
         if client:
@@ -249,7 +317,8 @@ async def test_panel_connection() -> tuple[bool, str]:
             return False, (
                 f"❌ لاگین ناموفق\n"
                 f"🌐 URL: {client.base_url}{client.panel_path}/login\n"
-                f"یوزر/پس رو چک کن (به حروف کوچیک/بزرگ حساسه)"
+                f"یوزر/پس رو چک کن (به حروف کوچیک/بزرگ حساسه)\n"
+                f"یا احتمالاً پنل در دسترس نیست / تایم‌اوت شده (لاگ سرور رو چک کن)"
             )
     elif client.auth_type == "apikey":
         if not client.api_key:

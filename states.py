@@ -127,3 +127,8 @@ class AdminCustomAccessAdd(StatesGroup):
 
 class AdminCustomAccessRemove(StatesGroup):
     waiting_input = State()
+
+
+# ---- نام‌گذاری خودکار کلاینت‌ها (برند + شمارنده) ----
+class AdminClientNaming(StatesGroup):
+    waiting_prefix = State()

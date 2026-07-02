@@ -43,6 +43,7 @@ def admin_panel_kb():
         [InlineKeyboardButton(text="👁 دسترسی دسته‌بندی‌ها",   callback_data="admin:cat_visibility")],
         [InlineKeyboardButton(text="📣 ارسال پیام گروهی",       callback_data="admin:broadcast")],
         [InlineKeyboardButton(text="🎛 پلن‌های دلخواه",          callback_data="admin:custom_plans")],
+        [InlineKeyboardButton(text="🏷 نام‌گذاری کلاینت‌ها",     callback_data="admin:naming")],
         [InlineKeyboardButton(text="🔑 لایسنس",                  callback_data="admin:license")],
     ])
 
@@ -95,7 +96,7 @@ def invoice_kb(service_id, cat_id, has_discount=False):
 def admin_categories_kb(categories):
     buttons = []
     for c in categories:
-        cid, name, emoji, is_active, sort_order = c
+        cid, name, emoji, is_active, sort_order, is_custom = c
         st = "✅" if is_active else "❌"
         buttons.append([
             InlineKeyboardButton(text=f"{st} {emoji} {name}", callback_data=f"admin:toggle_cat:{cid}"),
@@ -185,5 +186,18 @@ def admin_referral_menu_kb(cfg):
         [InlineKeyboardButton(text=f"🛍 پاداش خریدهای بعدی (ثابت): {reward_purchase:,} تومان", callback_data="admin:ref_set:reward_on_purchase")],
         [InlineKeyboardButton(text=f"📊 پاداش خریدهای بعدی (درصد): {reward_pct}%", callback_data="admin:ref_set:reward_purchase_percent")],
         [InlineKeyboardButton(text="📋 تاریخچه پاداش‌ها", callback_data="admin:ref_history")],
+        [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
+    ])
+
+
+def admin_naming_kb(cfg):
+    """
+    کیبورد مدیریت نام‌گذاری خودکار کلاینت‌ها (برند + شمارنده).
+    توجه: دکمه‌ی ریست شمارنده عمداً بدون تایید اضافه (مثل بقیه‌ی دکمه‌های ادمین این پروژه)
+    است؛ هشدار خطرش داخل متن منو نوشته می‌شه.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ تغییر پیشوند", callback_data="admin:naming_set_prefix")],
+        [InlineKeyboardButton(text="🔄 ریست شمارنده به صفر", callback_data="admin:naming_reset")],
         [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
     ])

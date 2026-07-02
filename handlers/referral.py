@@ -16,7 +16,7 @@ from db import (
 )
 from keyboards import get_kb, back_kb
 from states import FreeTrial
-from utils import format_data, data_label_short, normalize_phone, run_db,notify_admins
+from utils import format_data, data_label_short, normalize_phone, run_db, notify_admins, generate_client_email
 
 router = Router()
 
@@ -108,7 +108,7 @@ async def _process_trial_phone(message: types.Message, phone: str, cfg):
 
 
 async def _give_free_trial(message: types.Message, phone: str, cfg):
-    import time, io
+    import io
     import qrcode as qrcode_lib
     from aiogram.types import BufferedInputFile
     from panel import create_vpn_account
@@ -137,7 +137,9 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
         f"⏳ {duration_days} روز | {data_label_short(data_limit_gb)}"
     )
 
-    email = f"trial{user_id}_{int(time.time())}"
+    # ایمیل کلاینت از تابع مرکزی نام‌گذاری ساخته می‌شه (همون منطقی که برای خرید عادی و
+    # پلن دلخواه هم استفاده می‌شه، تا شمارنده‌ی برند برای همه‌ی انواع اکانت یکپارچه بمونه)
+    email = await generate_client_email()
     result = await create_vpn_account(user_id, email, duration_days, float(data_limit_gb))
 
     if result:
