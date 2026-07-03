@@ -209,6 +209,23 @@ class PanelClient:
             return data.get("obj")
         return None
 
+    async def set_client_group(self, email: str, group: str) -> bool:
+        """
+        اضافه کردن کلاینت به یک گروه در پنل (قسمت "گروه" کلاینت).
+        طبق داکیومنت پنل، اگه گروه از قبل وجود نداشته باشه خودکار ساخته می‌شه.
+        نکته: ساختار دقیق body این endpoint در داکیومنت مشخص نشده بود؛ اینجا بر اساس
+        الگوی سایر endpoint های bulk (که آرایه‌ی "emails" می‌گیرن) حدس زده شده.
+        اگه گروه روی پنل درست ست نشد، لاگ WARNING مربوط به _post دقیقاً پاسخ واقعی
+        سرور رو نشون می‌ده تا فیلدها اصلاح بشن.
+        """
+        if not group:
+            return True
+        data = await self._post("/panel/api/clients/groups/bulkAdd", {
+            "emails": [email],
+            "group": group,
+        })
+        return bool(data and data.get("success"))
+
 
 # ── Cached Client ───────────────────────────────────────────────
 
@@ -276,7 +293,10 @@ async def get_panel_client() -> PanelClient | None:
 
 # ── Public API ──────────────────────────────────────────────────
 
-async def create_vpn_account(user_id: int, email: str, duration_days: int, data_limit_gb: float) -> dict | None:
+async def create_vpn_account(
+    user_id: int, email: str, duration_days: int, data_limit_gb: float,
+    group: str | None = None,
+) -> dict | None:
     client = await _get_client()
     if not client:
         return None
@@ -288,6 +308,12 @@ async def create_vpn_account(user_id: int, email: str, duration_days: int, data_
         client = await _get_client()
         if client:
             result = await client.add_client(email, duration_days, data_limit_gb)
+
+    if result and group:
+        ok = await client.set_client_group(email, group)
+        if not ok:
+            logger.warning(f"Failed to set panel group '{group}' for client {email}")
+
     return result
 
 

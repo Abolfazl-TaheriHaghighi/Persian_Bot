@@ -1,4 +1,5 @@
 import os
+import html
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -157,12 +158,14 @@ async def license_create_token(message: types.Message, state: FSMContext):
     await state.update_data(target_token=token)
     await state.set_state(LicenseCreate.waiting_days)
     instance_id = get_instance_id(token)
+    # نکته: instance_id یک هگزادسیمال ساده است (فقط 0-9a-f) و با Markdown مشکلی نداره،
+    # ولی برای یکدست بودن سبک با بقیه‌ی پیام‌های این فایل، همینجا هم HTML استفاده می‌شه.
     await message.answer(
         f"✅ توکن ثبت شد\n"
-        f"🆔 Instance ID: `{instance_id}`\n\n"
+        f"🆔 Instance ID: <code>{html.escape(instance_id)}</code>\n\n"
         f"⏳ تعداد روز اعتبار رو وارد کن:\n"
         f"(0 = نامحدود)",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
@@ -188,11 +191,17 @@ async def license_create_days(message: types.Message, state: FSMContext):
         expire_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
         expire_text = f"{days} روز (تا {expire_date})"
 
+    # نکته‌ی امنیتی مهم: license_key خروجی Fernet.encrypt است که base64 urlsafe
+    # است و می‌تونه کاراکترهای _ و - داشته باشه. با parse_mode="Markdown" قدیمی،
+    # یک _ جفت‌نشده باعث خطای "can't find end of the entity" و کرش کل پیام می‌شه
+    # (دقیقاً همون کلاس باگی که در وضعیت سرویس‌ها هم رخ داد). برای همین HTML +
+    # escape استفاده می‌شه تا این ریسک برای همیشه از بین بره.
+    safe_license_key = html.escape(license_key)
     await message.answer(
         f"✅ لایسنس ساخته شد!\n{sep}\n"
         f"⏳ اعتبار: {expire_text}\n{sep}\n"
-        f"🔑 لایسنس:\n`{license_key}`\n{sep}\n"
+        f"🔑 لایسنس:\n<code>{safe_license_key}</code>\n{sep}\n"
         f"این لایسنس رو به مشتری بده تا از پنل ادمین وارد کنه.",
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=get_kb(message.from_user.id)
     )

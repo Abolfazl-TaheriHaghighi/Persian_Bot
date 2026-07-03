@@ -192,12 +192,13 @@ def admin_referral_menu_kb(cfg):
 
 def admin_naming_kb(cfg):
     """
-    کیبورد مدیریت نام‌گذاری خودکار کلاینت‌ها (برند + شمارنده).
+    کیبورد مدیریت نام‌گذاری خودکار کلاینت‌ها (برند + شمارنده + گروه پیش‌فرض).
     توجه: دکمه‌ی ریست شمارنده عمداً بدون تایید اضافه (مثل بقیه‌ی دکمه‌های ادمین این پروژه)
     است؛ هشدار خطرش داخل متن منو نوشته می‌شه.
     """
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ تغییر پیشوند", callback_data="admin:naming_set_prefix")],
+        [InlineKeyboardButton(text="✏️ تغییر پیشوند ایمیل", callback_data="admin:naming_set_prefix")],
         [InlineKeyboardButton(text="🔄 ریست شمارنده به صفر", callback_data="admin:naming_reset")],
+        [InlineKeyboardButton(text="🏷 تنظیم گروه پیش‌فرض کاربران", callback_data="admin:naming_set_group")],
         [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
     ])

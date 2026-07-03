@@ -132,3 +132,9 @@ class AdminCustomAccessRemove(StatesGroup):
 # ---- نام‌گذاری خودکار کلاینت‌ها (برند + شمارنده) ----
 class AdminClientNaming(StatesGroup):
     waiting_prefix = State()
+    waiting_default_group = State()
+
+
+# ---- برچسب گروه اختصاصی هر همکار ----
+class AdminPartnerGroupLabel(StatesGroup):
+    waiting_label = State()

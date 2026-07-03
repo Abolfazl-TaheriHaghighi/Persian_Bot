@@ -18,7 +18,7 @@ from db import (
 from panel import create_vpn_account
 from keyboards import get_kb, categories_kb, services_kb, invoice_kb, back_kb, custom_groups_kb
 from states import ApplyDiscount, CustomPlanOrder
-from utils import format_data, run_db, notify_admins, generate_client_email
+from utils import format_data, run_db, notify_admins, prepare_new_client
 
 router = Router()
 
@@ -263,11 +263,11 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
 
 async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tuple, is_trial: bool = False):
     sid, name, desc, price, days, data_gb, is_active, cat_name = service
-    # ایمیل کلاینت از تابع مرکزی نام‌گذاری ساخته می‌شه (پیشوند برند + شمارنده‌ی اتمیک،
-    # یا fallback به timestamp اگه ادمین هنوز پیشوندی تنظیم نکرده باشه)
-    email = await generate_client_email()
+    # ایمیل (پیشوند برند + شمارنده‌ی اتمیک) و گروه پنل (ادمین/همکار/پیش‌فرض)
+    # با یک تابع مرکزی آماده می‌شن تا منطق تشخیص نوع کاربر یکجا و بدون تکرار بمونه
+    email, group = await prepare_new_client(user_id)
 
-    result = await create_vpn_account(user_id, email, days, float(data_gb))
+    result = await create_vpn_account(user_id, email, days, float(data_gb), group=group)
 
     if result:
         await run_db(save_vpn_account,
@@ -284,10 +284,13 @@ async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tup
         )
         expire_date = datetime.datetime.fromtimestamp(result["expire_time"] / 1000).strftime('%Y-%m-%d')
         sep = "─" * 22
+        # HTML به‌جای Markdown — همون دلیل امنیتی که در handlers/user.py توضیح داده شد
+        import html
+        safe_sub_url = html.escape(result["sub_url"])
         caption = (
             f"✅ اکانت VPN شما آماده شد!\n{sep}\n"
             f"🔗 لینک سابسکریپشن:\n"
-            f"`{result['sub_url']}`\n"
+            f"<code>{safe_sub_url}</code>\n"
             f"{sep}\n"
             f"📅 انقضا: {expire_date}\n"
             f"{format_data(data_gb)}\n{sep}\n"
@@ -298,7 +301,7 @@ async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tup
             user_id,
             photo=BufferedInputFile(qr_buf.read(), filename="vpn_qr.png"),
             caption=caption,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     else:
         await bot.send_message(
@@ -658,14 +661,16 @@ async def custom_plan_confirm(call: types.CallbackQuery, state: FSMContext, bot:
 async def _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, inbound_ids):
     from panel import get_panel_client
 
-    # ایمیل کلاینت از تابع مرکزی نام‌گذاری ساخته می‌شه (همون منطقی که برای خرید عادی و
-    # تست رایگان هم استفاده می‌شه، تا شمارنده‌ی برند برای همه‌ی انواع اکانت یکپارچه بمونه)
-    email = await generate_client_email()
+    # ایمیل و گروه پنل با همون تابع مرکزی که برای خرید عادی و تست رایگان هم
+    # استفاده می‌شه آماده می‌شن، تا شمارنده‌ی برند و منطق گروه‌بندی یکپارچه بمونه
+    email, group = await prepare_new_client(user_id)
 
     client = await get_panel_client()
     result = None
     if client:
         result = await client.add_client(email, days, gb, inbound_ids=inbound_ids)
+        if result and group:
+            await client.set_client_group(email, group)
 
     if result:
         await run_db(save_vpn_account,
@@ -682,11 +687,15 @@ async def _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, 
         )
         expire_date = datetime.datetime.fromtimestamp(result["expire_time"] / 1000).strftime('%Y-%m-%d')
         sep = "─" * 22
+        # HTML به‌جای Markdown — همون دلیل امنیتی که در handlers/user.py توضیح داده شد
+        import html
+        safe_sub_url = html.escape(result["sub_url"])
+        safe_service_name = html.escape(service_name)
         caption = (
             f"✅ اکانت VPN شما آماده شد!\n{sep}\n"
-            f"📦 {service_name}\n"
+            f"📦 {safe_service_name}\n"
             f"🔗 لینک سابسکریپشن:\n"
-            f"`{result['sub_url']}`\n"
+            f"<code>{safe_sub_url}</code>\n"
             f"{sep}\n"
             f"📅 انقضا: {expire_date}\n"
             f"📶 {gb:g} گیگابایت\n{sep}\n"
@@ -697,7 +706,7 @@ async def _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, 
             user_id,
             photo=BufferedInputFile(qr_buf.read(), filename="vpn_qr.png"),
             caption=caption,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     else:
         await bot.send_message(

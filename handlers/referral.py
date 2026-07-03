@@ -16,7 +16,7 @@ from db import (
 )
 from keyboards import get_kb, back_kb
 from states import FreeTrial
-from utils import format_data, data_label_short, normalize_phone, run_db, notify_admins, generate_client_email
+from utils import format_data, data_label_short, normalize_phone, run_db, notify_admins, prepare_new_client
 
 router = Router()
 
@@ -137,10 +137,10 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
         f"⏳ {duration_days} روز | {data_label_short(data_limit_gb)}"
     )
 
-    # ایمیل کلاینت از تابع مرکزی نام‌گذاری ساخته می‌شه (همون منطقی که برای خرید عادی و
-    # پلن دلخواه هم استفاده می‌شه، تا شمارنده‌ی برند برای همه‌ی انواع اکانت یکپارچه بمونه)
-    email = await generate_client_email()
-    result = await create_vpn_account(user_id, email, duration_days, float(data_limit_gb))
+    # ایمیل و گروه پنل با تابع مرکزی آماده می‌شن (همون منطقی که برای خرید عادی و
+    # پلن دلخواه هم استفاده می‌شه، تا شمارنده‌ی برند و گروه‌بندی یکپارچه بمونه)
+    email, group = await prepare_new_client(user_id)
+    result = await create_vpn_account(user_id, email, duration_days, float(data_limit_gb), group=group)
 
     if result:
         await run_db(save_vpn_account,
@@ -155,11 +155,16 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
             sub_url=result.get("sub_url")
         )
         import datetime
+        import html
         expire_date = datetime.datetime.fromtimestamp(result["expire_time"] / 1000).strftime('%Y-%m-%d')
+        # HTML به‌جای Markdown استفاده می‌شه چون اگه sub_path/دامنه‌ی پنل حاوی
+        # کاراکتری مثل _ باشه، Markdown نسخه‌ی قدیمی با خطای "can't find end of
+        # the entity" کل پیام رو رد می‌کنه (مشابه باگی که در وضعیت سرویس‌ها بود)
+        safe_sub_url = html.escape(result["sub_url"])
         caption = (
             f"✅ اکانت تست VPN آماده شد!\n{sep}\n"
             f"🔗 لینک سابسکریپشن:\n"
-            f"`{result['sub_url']}`\n"
+            f"<code>{safe_sub_url}</code>\n"
             f"{sep}\n"
             f"📅 انقضا: {expire_date}\n"
             f"{format_data(data_limit_gb)}\n{sep}\n"
@@ -176,7 +181,7 @@ async def _give_free_trial(message: types.Message, phone: str, cfg):
             user_id,
             photo=BufferedInputFile(buf.read(), filename="vpn_qr.png"),
             caption=caption,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     else:
         await message.bot.send_message(

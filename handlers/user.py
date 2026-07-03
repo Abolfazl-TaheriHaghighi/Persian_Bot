@@ -149,107 +149,132 @@ async def balance(message: types.Message):
 # ================================================================
 # SERVICE STATUS
 # ================================================================
+# نکته‌ی مهم: این بخش دیگه به پنل زنده وصل نمی‌شه (get_client_status حذف شد).
+# چون اتصال زنده به پنل کند/ناپایدار بود و باعث تاخیر و timeout می‌شد، الان فقط
+# از اطلاعات ذخیره‌شده در دیتابیس خودِ ربات (سریع و همیشه در دسترس) استفاده می‌کنیم
+# و کاربر رو برای وضعیت لحظه‌ای (حجم مصرفی زنده) به اپلیکیشن VPN خودش با لینک ساب
+# هدایت می‌کنیم — چون خودِ اپ‌های VPN معمولاً وضعیت مصرف رو از سرور می‌خونن.
+
+def _fmt_total_bytes(b) -> str:
+    if not b or b <= 0:
+        return "♾ نامحدود"
+    b = float(b)
+    if b >= 1024 ** 3:
+        return f"{b / 1024 ** 3:.2f} GB"
+    if b >= 1024 ** 2:
+        return f"{b / 1024 ** 2:.0f} MB"
+    return f"{b / 1024:.0f} KB"
+
+
+def _fmt_time_left(target_dt) -> str:
+    import datetime
+    now = datetime.datetime.now()
+    diff = target_dt - now
+    if diff.total_seconds() <= 0:
+        return "⛔️ منقضی شده"
+    days = diff.days
+    hours = diff.seconds // 3600
+    if days > 0:
+        return f"⏳ {days} روز و {hours} ساعت مونده"
+    minutes = (diff.seconds % 3600) // 60
+    if hours > 0:
+        return f"⏳ {hours} ساعت و {minutes} دقیقه مونده"
+    return f"⏳ {minutes} دقیقه مونده"
+
+
+# تلگرام حداکثر ۴۰۹۶ کاراکتر برای هر پیام قبول می‌کنه. مقدار پایین‌تر برای
+# حاشیه‌ی امن در نظر گرفته شده (چون header/footer هم به هر chunk اضافه می‌شن)
+_MAX_MESSAGE_LEN = 3500
+
 
 @router.message(F.text == "📊 وضعیت سرویس‌ها")
 async def service_status(message: types.Message):
+    import html
     from db import get_user_vpn_accounts
-    from panel import get_client_status
-    import datetime
 
     accounts = await run_db(get_user_vpn_accounts, message.from_user.id)
     if not accounts:
         await message.answer("📊 هنوز سرویس فعالی نداری.")
         return
 
-    def _fmt_bytes(b):
-        if b is None:
-            return "—"
-        b = float(b)
-        if b >= 1024 ** 3:
-            return f"{b / 1024 ** 3:.2f} GB"
-        if b >= 1024 ** 2:
-            return f"{b / 1024 ** 2:.0f} MB"
-        return f"{b / 1024:.0f} KB"
-
-    def _fmt_time_left(target_dt: datetime.datetime) -> str:
-        now = datetime.datetime.now()
-        diff = target_dt - now
-        if diff.total_seconds() <= 0:
-            return "⛔️ منقضی شده"
-        days = diff.days
-        hours = diff.seconds // 3600
-        if days > 0:
-            return f"⏳ {days} روز و {hours} ساعت مونده"
-        minutes = (diff.seconds % 3600) // 60
-        if hours > 0:
-            return f"⏳ {hours} ساعت و {minutes} دقیقه مونده"
-        return f"⏳ {minutes} دقیقه مونده"
-
     sep = "─" * 22
-    text = f"📊 وضعیت سرویس‌های شما\n{sep}\n"
+    header = f"📊 وضعیت سرویس‌های شما\n{sep}\n"
+    footer = (
+        "\nℹ️ برای دیدن وضعیت لحظه‌ای (حجم مصرفی/باقی‌مانده)، لینک سابسکریپشن بالا رو "
+        "داخل اپلیکیشن VPN خودت وارد کن و از همون‌جا وضعیت سرویست رو ببین."
+    )
 
+    # هر سرویس به‌صورت یک بلوک کامل و جدا ساخته می‌شه، تا موقع تقسیم پیام هیچ‌وقت
+    # وسط یک <code> یا یک سرویس بریده نشه (که باعث خطای HTML entity می‌شد)
+    blocks = []
     for acc in accounts:
         (email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db,
-         created_at, is_trial, service_name, category_name) = acc
+         created_at, is_trial, service_name, category_name, purchase_id) = acc
 
         label = "🧪 تست رایگان" if is_trial else "💎 سرویس"
 
-        text += f"{label}\n"
-        text += f"📦 نام: {service_name}\n"
+        # نکته‌ی امنیتی: ایمیل، نام سرویس، دسته‌بندی و لینک ساب همگی مقادیر
+        # داینامیک هستن (بعضی‌شون از قبل با فرمت قدیمی دارای _ ساخته شدن) و اگه
+        # با parse_mode="Markdown" (نسخه‌ی قدیمی و شکننده) فرستاده بشن، یک _ یا *
+        # جفت‌نشده باعث خطای "can't find end of the entity" و کرش کل پیام می‌شه.
+        # برای همین از HTML استفاده می‌کنیم و همه‌ی مقادیر داینامیک رو escape می‌کنیم.
+        safe_service_name = html.escape(service_name or "")
+        safe_category_name = html.escape(category_name or "")
+        safe_email = html.escape(email or "")
+
+        block = f"{label}\n"
+        if purchase_id:
+            block += f"🔑 شماره سفارش: #{purchase_id}\n"
+        block += f"📦 نام: {safe_service_name}\n"
         if not is_trial:
-            text += f"🗂 دسته‌بندی: {category_name}\n"
+            block += f"🗂 دسته‌بندی: {safe_category_name}\n"
+        block += f"📧 ایمیل کلاینت: {safe_email}\n"
 
-        # اطلاعات زنده از پنل — اولویت با پنل، fallback به DB
-        stat = await get_client_status(email)
-
-        expiry_ms = None
-        total_bytes = None
-        used_bytes = None
-        enable = True
-
-        if stat:
-            expiry_ms = stat.get("expiryTime") or expire_time_db
-            total_bytes = stat.get("total") if stat.get("total") not in (None, 0) else data_limit_db
-            up = stat.get("up", 0) or 0
-            down = stat.get("down", 0) or 0
-            used_bytes = up + down
-            enable = stat.get("enable", True)
-        else:
-            expiry_ms = expire_time_db
-            total_bytes = data_limit_db
-            used_bytes = None
-
-        # زمان باقیمونده
-        if expiry_ms:
-            exp_dt = datetime.datetime.fromtimestamp(expiry_ms / 1000)
-            text += f"{_fmt_time_left(exp_dt)}\n"
-            text += f"📅 تاریخ انقضا: {exp_dt.strftime('%Y-%m-%d %H:%M')}\n"
-        else:
-            text += "📅 بدون محدودیت زمانی\n"
-
-        # حجم
-        if total_bytes and total_bytes > 0:
-            remaining_bytes = max(0, total_bytes - (used_bytes or 0))
-            text += f"📶 حجم کل: {_fmt_bytes(total_bytes)}\n"
-            text += f"📥 حجم مصرفی: {_fmt_bytes(used_bytes or 0)}\n"
-            text += f"📤 حجم باقی‌مانده: {_fmt_bytes(remaining_bytes)}\n"
-        else:
-            text += f"📶 حجم: نامحدود"
-            if used_bytes is not None:
-                text += f" | مصرفی: {_fmt_bytes(used_bytes)}"
-            text += "\n"
-
-        text += f"🔘 وضعیت: {'✅ فعال' if enable else '❌ غیرفعال'}\n"
+        block += f"📶 حجم کل: {_fmt_total_bytes(data_limit_db)}\n"
 
         if sub_url:
-            text += f"🔗 لینک سابسکریپشن:\n`{sub_url}`\n"
+            safe_sub_url = html.escape(sub_url)
+            block += f"🔗 لینک سابسکریپشن:\n<code>{safe_sub_url}</code>\n"
 
-        if not stat:
-            text += "⚠️ اطلاعات زنده از پنل دریافت نشد (نمایش از کش)\n"
+            # طبق داکیومنت پنل، همین لینک ساب با ?html=1 یک صفحه‌ی وضعیت زنده
+            # (ترافیک مصرفی/باقی‌مانده، انقضا) رو مستقیماً از خودِ پنل رندر می‌کنه —
+            # پس نیازی به تماس ربات با API پنل نیست. اینجا به‌جای <code> از <a> استفاده
+            # می‌شه تا با یک تپ داخل مرورگر باز بشه.
+            separator = "&" if "?" in sub_url else "?"
+            live_status_url = f"{sub_url}{separator}html=1"
+            safe_live_status_url = html.escape(live_status_url, quote=True)
+            block += (
+                f"📡 دیدن لحظه‌ای وضعیت سرویس و حجم باقی‌مانده:\n"
+                f"<a href=\"{safe_live_status_url}\">مشاهده وضعیت زنده</a>\n"
+                f"⚠️ اگه صفحه‌ی وضعیت چیزی نشون نداد، اول فیلترشکن (VPN) گوشی یا سیستمت رو "
+                f"خاموش کن و دوباره امتحان کن. اگه بازم چیزی نمایش داده نشد، یعنی این سرویس "
+                f"به‌خاطر اتمام حجم یا پایان مدت اشتراک از روی پنل حذف شده.\n"
+            )
 
-        text += f"{sep}\n"
+        block += f"{sep}\n"
+        blocks.append(block)
 
-    await message.answer(text, parse_mode="Markdown")
+    # بلوک‌ها رو در چند پیام (chunk) جمع می‌کنیم، بدون شکستن وسط یک سرویس
+    chunks = []
+    current = header
+    for block in blocks:
+        if len(current) + len(block) > _MAX_MESSAGE_LEN and current != header:
+            chunks.append(current)
+            current = ""
+        current += block
+    if current:
+        chunks.append(current)
+
+    if chunks and len(chunks[-1]) + len(footer) <= _MAX_MESSAGE_LEN:
+        chunks[-1] += footer
+    else:
+        chunks.append(footer)
+
+    for chunk in chunks:
+        await message.answer(chunk, parse_mode="HTML")
+        if len(chunks) > 1:
+            import asyncio
+            await asyncio.sleep(0.05)
 
 
 # ================================================================
@@ -262,8 +287,21 @@ async def my_purchases(message: types.Message):
     if not purchases:
         await message.answer("📋 هنوز خریدی نداشتی.")
         return
-    text = "📋 تاریخچه خریدهای شما:\n\n"
+
+    sep = "─" * 22
+    text = f"📋 تاریخچه خریدهای شما\n{sep}\n"
     for p in purchases:
-        sname, amt, pat = p
-        text += f"📦 {sname} | {amt:,} تومان | {pat.strftime('%Y-%m-%d %H:%M')}\n"
+        pid, sname, amt, pat, category_name = p
+        text += (
+            f"📦 نام: {sname}\n"
+            f"🔑 شماره سفارش: #{pid}\n"
+            f"🗂 دسته‌بندی: {category_name}\n"
+            f"💰 مبلغ: {amt:,} تومان\n"
+            f"📅 تاریخ: {pat.strftime('%Y-%m-%d %H:%M')}\n"
+            f"{sep}\n"
+        )
+
+    # نکته: get_user_purchases با LIMIT 10 محدود شده، پس طول این پیام هیچ‌وقت
+    # به سقف ۴۰۹۶ کاراکتری تلگرام نمی‌رسه و نیازی به chunk کردن نداره
+    # (برخلاف وضعیت سرویس‌ها که تعداد سرویس‌ها می‌تونه نامحدود باشه)
     await message.answer(text)

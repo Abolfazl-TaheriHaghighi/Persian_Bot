@@ -16,6 +16,7 @@ from db import (
     get_all_partners, get_partner, add_partner, remove_partner,
     get_user_purchases,
     get_client_naming_config, set_client_naming_prefix, reset_client_naming_counter,
+    set_default_client_group, set_partner_group_label,
     connect as db_connect
 )
 from keyboards import (
@@ -28,7 +29,7 @@ from states import (
     AdminAddCategory, AdminAddService, AdminEditService,
     AdminEditBalance, AdminDiscountCode,
     AdminTrialConfig, AdminPhoneOverride, AdminReferralConfig,
-    AdminAddChannel, AdminAddPartnerManual, AdminClientNaming
+    AdminAddChannel, AdminAddPartnerManual, AdminClientNaming, AdminPartnerGroupLabel
 )
 from pro_guard import (
     require_pro, check_free_category_limit, check_free_service_limit
@@ -1204,6 +1205,7 @@ def partner_detail_kb(user_id, is_active):
     toggle_text = "❌ غیرفعال کردن" if is_active else "✅ فعال کردن"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_text, callback_data=f"admin:partner_toggle:{user_id}")],
+        [InlineKeyboardButton(text="🏷 تنظیم لیبل گروه", callback_data=f"admin:partner_set_label:{user_id}")],
         [InlineKeyboardButton(text="🛍 آمار خرید", callback_data=f"admin:partner_purchases:{user_id}")],
         [InlineKeyboardButton(text="🗑 حذف همکار", callback_data=f"admin:partner_delete:{user_id}")],
         [InlineKeyboardButton(text="🔙 برگشت به لیست", callback_data="admin:partners")],
@@ -1234,7 +1236,7 @@ async def admin_partner_detail(call: types.CallbackQuery):
     if not p:
         await call.answer("❌ یافت نشد", show_alert=True)
         return
-    pid, uid, phone, desc, status, added_at = p
+    pid, uid, phone, desc, status, added_at, group_label = p
     bal = await run_db(get_balance, uid)
     purchases = await run_db(get_user_purchases, uid)
     sep = "─" * 22
@@ -1243,6 +1245,7 @@ async def admin_partner_detail(call: types.CallbackQuery):
         f"🆔 User ID: {uid}\n"
         f"📱 شماره: {phone or '—'}\n"
         f"📝 توضیحات: {desc or '—'}\n"
+        f"🏷 برچسب گروه پنل: {group_label or '(پیش‌فرض)'}\n"
         f"🔘 وضعیت: {'✅ فعال' if status == 'active' else '❌ غیرفعال'}\n"
         f"💰 موجودی: {bal:,} تومان\n"
         f"🛍 تعداد خرید: {len(purchases)}\n"
@@ -1250,6 +1253,35 @@ async def admin_partner_detail(call: types.CallbackQuery):
     )
     await call.message.edit_text(text, reply_markup=partner_detail_kb(uid, status == "active"))
     await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:partner_set_label:"))
+async def admin_partner_set_label_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    user_id = int(call.data.split(":")[2])
+    await state.set_state(AdminPartnerGroupLabel.waiting_label)
+    await state.update_data(target_partner_id=user_id)
+    await call.message.answer(
+        "🏷 برچسب گروه این همکار رو وارد کن.\n"
+        "این برچسب داخل قسمت «گروه» کلاینت‌های VPN که این همکار می‌سازه (خرید می‌کنه) ثبت می‌شه.\n"
+        "می‌تونی فارسی یا انگلیسی بنویسی (بدون محدودیت کاراکتر خاص، چون این فقط یه برچسب نمایشیه نه ایمیل).\n\n"
+        "یا /skip برای پاک کردن برچسب اختصاصی و برگشت به گروه پیش‌فرض:"
+    )
+    await call.answer()
+
+
+@router.message(AdminPartnerGroupLabel.waiting_label)
+async def admin_partner_set_label_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = data["target_partner_id"]
+    label = None if message.text.strip() == "/skip" else message.text.strip()
+    await run_db(set_partner_group_label, user_id, label)
+    await state.clear()
+    await message.answer(
+        f"✅ برچسب گروه ذخیره شد: {label or '(پیش‌فرض)'}",
+        reply_markup=get_kb(message.from_user.id)
+    )
 
 
 @router.callback_query(F.data.startswith("admin:partner_purchases:"))
@@ -1265,8 +1297,8 @@ async def admin_partner_purchases(call: types.CallbackQuery):
     text = f"🛍 خریدهای همکار {user_id}\n{sep}\n"
     total = 0
     for p in purchases:
-        sname, amt, pat = p
-        text += f"📦 {sname} | {amt:,}T | {pat.strftime('%Y-%m-%d')}\n"
+        pid, sname, amt, pat, category_name = p
+        text += f"📦 {sname} | 🔑 #{pid} | {amt:,}T | {pat.strftime('%Y-%m-%d')}\n"
         total += amt
     text += f"{sep}\n💰 مجموع: {total:,} تومان"
     await call.message.edit_text(text, reply_markup=back_kb(f"admin:partner_detail:{user_id}"))
@@ -1314,13 +1346,14 @@ async def admin_partner_toggle(call: types.CallbackQuery):
         await run_db(add_partner, user_id, p[2], p[3])
         await call.answer("✅ فعال شد", show_alert=True)
     p = await run_db(get_partner, user_id)
-    pid, uid, phone, desc, status, added_at = p
+    pid, uid, phone, desc, status, added_at, group_label = p
     sep = "─" * 22
     text = (
         f"🤝 جزئیات همکار\n{sep}\n"
         f"🆔 User ID: {uid}\n"
         f"📱 شماره: {phone or '—'}\n"
         f"📝 توضیحات: {desc or '—'}\n"
+        f"🏷 برچسب گروه پنل: {group_label or '(پیش‌فرض)'}\n"
         f"🔘 وضعیت: {'✅ فعال' if status == 'active' else '❌ غیرفعال'}\n"
     )
     await call.message.edit_text(text, reply_markup=partner_detail_kb(uid, status == "active"))
@@ -1884,37 +1917,47 @@ async def admin_custom_grp_edit_save(message: types.Message, state: FSMContext):
 
 
 # ================================================================
-# CLIENT NAMING (برند + شمارنده)
+# CLIENT NAMING (برند + شمارنده + گروه پنل)
 # ================================================================
+
+def _format_naming_menu_text(cfg) -> str:
+    """
+    متن مشترک منوی نام‌گذاری — هم توسط admin_naming_menu و هم بعد از هر تغییر
+    (تنظیم پیشوند/گروه/ریست شمارنده) صدا زده می‌شه تا کد تکراری نشه.
+    """
+    prefix = cfg[0] if cfg else ""
+    counter = cfg[1] if cfg else 0
+    default_group = cfg[2] if cfg and len(cfg) > 2 else ""
+    sep = "─" * 22
+
+    if prefix:
+        next_number = counter + 1
+        naming_part = (
+            f"📛 پیشوند ایمیل: {prefix}\n"
+            f"🔢 آخرین شماره‌ی استفاده‌شده: {counter}\n"
+            f"👀 نمونه‌ی ایمیل بعدی: {prefix}{next_number}\n"
+        )
+    else:
+        naming_part = "⚠️ پیشوند ایمیل تنظیم نشده (فرمت پیش‌فرض: client + زمان)\n"
+
+    group_part = f"🏷 گروه پیش‌فرض کاربران عادی: {default_group or '(تنظیم نشده)'}\n"
+
+    return (
+        f"🏷 نام‌گذاری خودکار کلاینت‌ها\n{sep}\n"
+        f"{naming_part}{sep}\n"
+        f"{group_part}{sep}\n"
+        f"🔹 ادمین → گروه «Admin»\n"
+        f"🔹 همکاران → برچسب اختصاصی هرکدوم (از جزئیات همکار قابل تنظیمه)\n"
+        f"🔹 بقیه‌ی کاربران → همون گروه پیش‌فرض بالا"
+    )
+
 
 @router.callback_query(F.data == "admin:naming")
 async def admin_naming_menu(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     cfg = await run_db(get_client_naming_config)
-    prefix, counter = (cfg[0], cfg[1]) if cfg else ("", 0)
-    sep = "─" * 22
-
-    if prefix:
-        next_number = counter + 1
-        text = (
-            f"🏷 نام‌گذاری خودکار کلاینت‌ها\n{sep}\n"
-            f"📛 پیشوند فعلی: {prefix}\n"
-            f"🔢 آخرین شماره‌ی استفاده‌شده: {counter}\n"
-            f"👀 نمونه‌ی بعدی که ساخته می‌شه: {prefix}{next_number}\n{sep}\n"
-            f"از این پس ایمیل همه‌ی کلاینت‌های جدید (خرید عادی، تست رایگان، پلن دلخواه) "
-            f"بر همین اساس ساخته می‌شن."
-        )
-    else:
-        text = (
-            f"🏷 نام‌گذاری خودکار کلاینت‌ها\n{sep}\n"
-            f"⚠️ هنوز پیشوندی تنظیم نشده.\n"
-            f"در حالت پیش‌فرض، ایمیل‌ها به شکل client + زمان ساخته می‌شن.\n\n"
-            f"با تنظیم یک پیشوند (مثلاً PersianShield)، کلاینت‌های جدید این‌طور نام‌گذاری می‌شن:\n"
-            f"PersianShield1, PersianShield2, ..."
-        )
-
-    await call.message.edit_text(text, reply_markup=admin_naming_kb(cfg))
+    await call.message.edit_text(_format_naming_menu_text(cfg), reply_markup=admin_naming_kb(cfg))
     await call.answer()
 
 
@@ -1924,7 +1967,7 @@ async def admin_naming_set_prefix_start(call: types.CallbackQuery, state: FSMCon
         return
     await state.set_state(AdminClientNaming.waiting_prefix)
     await call.message.answer(
-        "🏷 پیشوند برند رو وارد کن.\n"
+        "🏷 پیشوند برند ایمیل رو وارد کن.\n"
         "⚠️ فقط حروف انگلیسی، عدد، _ و - مجازه (فاصله و حروف فارسی حذف می‌شن)\n"
         "مثال: PersianShield\n\n"
         "شماره‌ها خودکار بعدش اضافه می‌شن: PersianShield1, PersianShield2, ..."
@@ -1947,12 +1990,41 @@ async def admin_naming_set_prefix_save(message: types.Message, state: FSMContext
     await state.clear()
 
     cfg = await run_db(get_client_naming_config)
-    _, counter = cfg if cfg else ("", 0)
+    counter = cfg[1] if cfg else 0
     next_number = counter + 1
 
     await message.answer(
         f"✅ پیشوند تنظیم شد: {sanitized}\n"
         f"👀 نمونه‌ی بعدی که ساخته می‌شه: {sanitized}{next_number}",
+        reply_markup=get_kb(message.from_user.id)
+    )
+
+
+@router.callback_query(F.data == "admin:naming_set_group")
+async def admin_naming_set_group_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminClientNaming.waiting_default_group)
+    await call.message.answer(
+        "🏷 برچسب گروه پیش‌فرض برای کاربران عادی (غیر همکار، غیر ادمین) رو وارد کن.\n"
+        "مثلاً: PersianShield یا پرشین شیلد\n\n"
+        "این برچسب داخل قسمت «گروه» کلاینت‌های VPN که کاربران عادی می‌سازن (خرید عادی، "
+        "تست رایگان، پلن دلخواه) ثبت می‌شه.\n"
+        "برخلاف پیشوند ایمیل، اینجا محدودیت کاراکتری نداره (فارسی هم مجازه)."
+    )
+    await call.answer()
+
+
+@router.message(AdminClientNaming.waiting_default_group)
+async def admin_naming_set_group_save(message: types.Message, state: FSMContext):
+    group_name = message.text.strip()
+    if not group_name:
+        await message.answer("❌ نمی‌تونه خالی باشه. دوباره وارد کن:")
+        return
+    await run_db(set_default_client_group, group_name)
+    await state.clear()
+    await message.answer(
+        f"✅ گروه پیش‌فرض کاربران عادی تنظیم شد: {group_name}",
         reply_markup=get_kb(message.from_user.id)
     )
 
@@ -1964,17 +2036,7 @@ async def admin_naming_reset(call: types.CallbackQuery):
     await run_db(reset_client_naming_counter)
     await call.answer("✅ شمارنده صفر شد", show_alert=True)
     cfg = await run_db(get_client_naming_config)
-    prefix, counter = (cfg[0], cfg[1]) if cfg else ("", 0)
-    sep = "─" * 22
-    if prefix:
-        next_number = counter + 1
-        text = (
-            f"🏷 نام‌گذاری خودکار کلاینت‌ها\n{sep}\n"
-            f"📛 پیشوند فعلی: {prefix}\n"
-            f"🔢 آخرین شماره‌ی استفاده‌شده: {counter}\n"
-            f"👀 نمونه‌ی بعدی که ساخته می‌شه: {prefix}{next_number}\n{sep}\n"
-            f"⚠️ اگه کلاینت‌های قبلی با اعداد کوچیک‌تر هنوز فعالن، نام‌های تکراری ساخته می‌شن."
-        )
-    else:
-        text = f"🏷 نام‌گذاری خودکار کلاینت‌ها\n{sep}\n⚠️ هنوز پیشوندی تنظیم نشده."
+    text = _format_naming_menu_text(cfg)
+    if cfg and cfg[0]:
+        text += "\n\n⚠️ اگه کلاینت‌های قبلی با اعداد کوچیک‌تر هنوز فعالن، نام‌های تکراری ساخته می‌شن."
     await call.message.edit_text(text, reply_markup=admin_naming_kb(cfg))

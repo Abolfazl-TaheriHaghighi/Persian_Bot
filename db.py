@@ -258,6 +258,8 @@ def init_db():
             added_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    # برچسب گروهی که کلاینت‌های VPN این همکار روی پنل زیرش قرار می‌گیرن (قسمت "گروه")
+    cur.execute("ALTER TABLE partners ADD COLUMN IF NOT EXISTS client_group_label TEXT DEFAULT NULL")
 
     # ---- درخواست‌های همکاری ----
     cur.execute("""
@@ -297,6 +299,8 @@ def init_db():
         )
     """)
     cur.execute("INSERT INTO client_naming_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+    # برچسب گروه پیش‌فرض روی پنل برای کاربران عادی (غیر ادمین، غیر همکار)
+    cur.execute("ALTER TABLE client_naming_config ADD COLUMN IF NOT EXISTS default_group TEXT NOT NULL DEFAULT ''")
 
     conn.commit()
     conn.close()
@@ -646,8 +650,12 @@ def get_user_purchases(user_id):
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT service_name, amount_paid, purchased_at FROM purchases
-        WHERE user_id=%s ORDER BY purchased_at DESC LIMIT 10
+        SELECT p.id, p.service_name, p.amount_paid, p.purchased_at,
+               COALESCE(c.name, '—') as category_name
+        FROM purchases p
+        LEFT JOIN services s ON p.service_id = s.id
+        LEFT JOIN categories c ON s.category_id = c.id
+        WHERE p.user_id=%s ORDER BY p.purchased_at DESC LIMIT 10
     """, (user_id,))
     rows = cur.fetchall()
     conn.close()
@@ -1139,12 +1147,21 @@ def get_partner(user_id):
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, user_id, phone, description, status, added_at
+        SELECT id, user_id, phone, description, status, added_at, client_group_label
         FROM partners WHERE user_id=%s
     """, (user_id,))
     r = cur.fetchone()
     conn.close()
     return r
+
+
+def set_partner_group_label(user_id: int, label: str | None):
+    """تنظیم یا پاک کردن (با None) برچسب گروه پنل این همکار"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE partners SET client_group_label=%s WHERE user_id=%s", (label, user_id))
+    conn.commit()
+    conn.close()
 
 
 # ================== PARTNER REQUESTS ==================
@@ -1255,7 +1272,7 @@ def save_vpn_account(user_id, email, uuid, inbound_id, expire_time, data_limit,
 
 def get_user_vpn_accounts(user_id):
     """
-    اطلاعات کامل سرویس‌های VPN کاربر شامل نام سرویس و دسته‌بندی
+    اطلاعات کامل سرویس‌های VPN کاربر شامل نام سرویس، دسته‌بندی و شماره‌ی سفارش
     (با JOIN به purchases و services/categories — برای تست رایگان این فیلدها NULL میشن)
     """
     conn = connect()
@@ -1265,7 +1282,8 @@ def get_user_vpn_accounts(user_id):
             v.email, v.uuid, v.sub_url, v.inbound_id, v.expire_time,
             v.data_limit, v.created_at, v.is_trial,
             COALESCE(p.service_name, s.name, 'تست رایگان') as service_name,
-            COALESCE(c.name, '—') as category_name
+            COALESCE(c.name, '—') as category_name,
+            v.purchase_id
         FROM vpn_accounts v
         LEFT JOIN purchases p ON v.purchase_id = p.id
         LEFT JOIN services s ON p.service_id = s.id
@@ -1290,13 +1308,55 @@ def has_previous_purchase(user_id):
 # ================== CLIENT NAMING (برند + شمارنده) ==================
 
 def get_client_naming_config():
-    """برمی‌گردونه (prefix, counter) — برای نمایش وضعیت فعلی به ادمین"""
+    """برمی‌گردونه (prefix, counter, default_group) — برای نمایش وضعیت فعلی به ادمین"""
     conn = connect()
     cur = conn.cursor()
-    cur.execute("SELECT prefix, counter FROM client_naming_config WHERE id=1")
+    cur.execute("SELECT prefix, counter, default_group FROM client_naming_config WHERE id=1")
     r = cur.fetchone()
     conn.close()
     return r
+
+
+def set_default_client_group(group_name: str):
+    """تنظیم برچسب گروه پیش‌فرض روی پنل برای کاربران عادی (غیر ادمین، غیر همکار)"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO client_naming_config (id, default_group)
+        VALUES (1, %s)
+        ON CONFLICT (id) DO UPDATE SET default_group=EXCLUDED.default_group
+    """, (group_name,))
+    conn.commit()
+    conn.close()
+
+
+def get_client_group_for_user(user_id: int) -> str:
+    """
+    برچسب گروه پنلی که باید روی کلاینت جدید این کاربر گذاشته بشه:
+    - ادمین  → "Admin" (ثابت)
+    - همکار فعال با برچسب اختصاصی تنظیم‌شده → همون برچسب
+    - بقیه (کاربر عادی، یا همکاری که برچسب اختصاصی نداره) → گروه پیش‌فرض تنظیم‌شده توسط ادمین
+    اگه هیچ‌کدوم تنظیم نشده باشه، رشته‌ی خالی برمی‌گردونه (یعنی گروهی روی پنل ست نشه)
+    """
+    from config import is_admin
+    if is_admin(user_id):
+        return "Admin"
+
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT client_group_label FROM partners WHERE user_id=%s AND status='active'",
+        (user_id,)
+    )
+    r = cur.fetchone()
+    if r and r[0]:
+        conn.close()
+        return r[0]
+
+    cur.execute("SELECT default_group FROM client_naming_config WHERE id=1")
+    r2 = cur.fetchone()
+    conn.close()
+    return r2[0] if r2 and r2[0] else ""
 
 
 def set_client_naming_prefix(prefix: str):

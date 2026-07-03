@@ -77,3 +77,17 @@ async def generate_client_email() -> str:
     """
     from db import get_next_client_email
     return await run_db(get_next_client_email)
+
+
+async def prepare_new_client(user_id: int) -> tuple[str, str]:
+    """
+    یک‌جا هرچی برای ساخت کلاینت جدید لازمه رو آماده می‌کنه: (email, group).
+    group بر اساس نوع کاربر تعیین می‌شه:
+      - ادمین → "Admin"
+      - همکار با برچسب اختصاصی → همون برچسب
+      - بقیه → گروه پیش‌فرض تنظیم‌شده توسط ادمین (یا رشته‌ی خالی اگه هنوز تنظیم نشده)
+    """
+    from db import get_client_group_for_user
+    email = await generate_client_email()
+    group = await run_db(get_client_group_for_user, user_id)
+    return email, group
