@@ -91,3 +91,40 @@ async def prepare_new_client(user_id: int) -> tuple[str, str]:
     email = await generate_client_email()
     group = await run_db(get_client_group_for_user, user_id)
     return email, group
+
+
+# ================== MESSAGE CHUNKING (سقف ۴۰۹۶ کاراکتری تلگرام) ==================
+
+def chunk_blocks(header: str, blocks: list, footer: str = "", max_len: int = 3500) -> list:
+    """
+    بلوک‌های متنی (هرکدوم مثلاً معرف یک سرویس یا یک خرید) رو در چند پیام (chunk)
+    با طول کمتر از max_len ترکیب می‌کنه، بدون این‌که وسط هیچ بلوکی بریده بشه —
+    این خیلی مهمه چون اگه وسط یک تگ HTML (مثلاً <code> یا <a>) بریده بشه، پیام با
+    خطای entity parsing کرش می‌کنه. حاشیه‌ی امن (max_len=3500 به‌جای ۴۰۹۶) برای
+    جا دادن header/footer در همون chunk در نظر گرفته شده.
+    """
+    chunks = []
+    current = header
+    for block in blocks:
+        if len(current) + len(block) > max_len and current != header:
+            chunks.append(current)
+            current = ""
+        current += block
+    if current:
+        chunks.append(current)
+
+    if footer:
+        if chunks and len(chunks[-1]) + len(footer) <= max_len:
+            chunks[-1] += footer
+        else:
+            chunks.append(footer)
+
+    return chunks
+
+
+async def send_chunks(message, chunks: list, parse_mode: str | None = None):
+    """ارسال چند chunk پشت‌سرهم با فاصله‌ی کوتاه، برای جلوگیری از خوردن به Flood Limit تلگرام"""
+    for chunk in chunks:
+        await message.answer(chunk, parse_mode=parse_mode)
+        if len(chunks) > 1:
+            await asyncio.sleep(0.05)

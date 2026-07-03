@@ -11,7 +11,7 @@ from db import (
     connect as db_connect
 )
 from keyboards import get_kb
-from utils import run_db
+from utils import run_db, chunk_blocks, send_chunks
 
 router = Router()
 
@@ -184,9 +184,6 @@ def _fmt_time_left(target_dt) -> str:
 
 # تلگرام حداکثر ۴۰۹۶ کاراکتر برای هر پیام قبول می‌کنه. مقدار پایین‌تر برای
 # حاشیه‌ی امن در نظر گرفته شده (چون header/footer هم به هر chunk اضافه می‌شن)
-_MAX_MESSAGE_LEN = 3500
-
-
 @router.message(F.text == "📊 وضعیت سرویس‌ها")
 async def service_status(message: types.Message):
     import html
@@ -254,27 +251,8 @@ async def service_status(message: types.Message):
         block += f"{sep}\n"
         blocks.append(block)
 
-    # بلوک‌ها رو در چند پیام (chunk) جمع می‌کنیم، بدون شکستن وسط یک سرویس
-    chunks = []
-    current = header
-    for block in blocks:
-        if len(current) + len(block) > _MAX_MESSAGE_LEN and current != header:
-            chunks.append(current)
-            current = ""
-        current += block
-    if current:
-        chunks.append(current)
-
-    if chunks and len(chunks[-1]) + len(footer) <= _MAX_MESSAGE_LEN:
-        chunks[-1] += footer
-    else:
-        chunks.append(footer)
-
-    for chunk in chunks:
-        await message.answer(chunk, parse_mode="HTML")
-        if len(chunks) > 1:
-            import asyncio
-            await asyncio.sleep(0.05)
+    chunks = chunk_blocks(header, blocks, footer)
+    await send_chunks(message, chunks, parse_mode="HTML")
 
 
 # ================================================================
@@ -289,19 +267,23 @@ async def my_purchases(message: types.Message):
         return
 
     sep = "─" * 22
-    text = f"📋 تاریخچه خریدهای شما\n{sep}\n"
+    header = f"📋 تاریخچه خریدهای شما\n{sep}\n"
+
+    # هر خرید یک بلوک کامل و جدا ساخته می‌شه، تا موقع تقسیم پیام (chunk کردن)
+    # هیچ‌وقت وسط یک خرید بریده نشه — چون دیگه محدودیت تعداد (LIMIT) نداریم،
+    # ممکنه تعداد خریدها زیاد بشه و از سقف ۴۰۹۶ کاراکتری تلگرام رد بشه.
+    blocks = []
     for p in purchases:
-        pid, sname, amt, pat, category_name = p
-        text += (
+        pid, sname, amt, pat, category_name, email = p
+        blocks.append(
             f"📦 نام: {sname}\n"
             f"🔑 شماره سفارش: #{pid}\n"
             f"🗂 دسته‌بندی: {category_name}\n"
+            f"📧 ایمیل کلاینت: {email or '—'}\n"
             f"💰 مبلغ: {amt:,} تومان\n"
             f"📅 تاریخ: {pat.strftime('%Y-%m-%d %H:%M')}\n"
             f"{sep}\n"
         )
 
-    # نکته: get_user_purchases با LIMIT 10 محدود شده، پس طول این پیام هیچ‌وقت
-    # به سقف ۴۰۹۶ کاراکتری تلگرام نمی‌رسه و نیازی به chunk کردن نداره
-    # (برخلاف وضعیت سرویس‌ها که تعداد سرویس‌ها می‌تونه نامحدود باشه)
-    await message.answer(text)
+    chunks = chunk_blocks(header, blocks)
+    await send_chunks(message, chunks)

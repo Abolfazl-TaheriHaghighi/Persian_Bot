@@ -34,7 +34,7 @@ from states import (
 from pro_guard import (
     require_pro, check_free_category_limit, check_free_service_limit
 )
-from utils import format_data, data_label_short, normalize_phone, run_db, sanitize_naming_prefix
+from utils import format_data, data_label_short, normalize_phone, run_db, sanitize_naming_prefix, chunk_blocks
 
 router = Router()
 
@@ -1294,13 +1294,25 @@ async def admin_partner_purchases(call: types.CallbackQuery):
         await call.answer("هنوز خریدی نداشته", show_alert=True)
         return
     sep = "─" * 22
-    text = f"🛍 خریدهای همکار {user_id}\n{sep}\n"
-    total = 0
+    header = f"🛍 خریدهای همکار {user_id}\n{sep}\n"
+    total = sum(p[2] for p in purchases)
+
+    blocks = []
     for p in purchases:
-        pid, sname, amt, pat, category_name = p
-        text += f"📦 {sname} | 🔑 #{pid} | {amt:,}T | {pat.strftime('%Y-%m-%d')}\n"
-        total += amt
-    text += f"{sep}\n💰 مجموع: {total:,} تومان"
+        pid, sname, amt, pat, category_name, email = p
+        blocks.append(f"📦 {sname} | 🔑 #{pid} | {amt:,}T | {pat.strftime('%Y-%m-%d')}\n")
+
+    footer = f"{sep}\n💰 مجموع: {total:,} تومان"
+
+    # این هندلر با edit_text کار می‌کنه (نه ارسال چند پیام جدا)، پس اگه تعداد
+    # خریدها زیاد باشه و از سقف ۴۰۹۶ کاراکتری تلگرام رد بشه، فقط اولین chunk رو
+    # نشون می‌دیم و یک یادداشت اضافه می‌کنیم — برای دیدن کامل، کاربر می‌تونه از
+    # «📋 خریدهای من» خودش (که چندپیامیه) استفاده کنه.
+    chunks = chunk_blocks(header, blocks, footer)
+    text = chunks[0]
+    if len(chunks) > 1:
+        text += "\n⚠️ لیست طولانی‌تر از این بود؛ فقط بخش اول نشون داده شد."
+
     await call.message.edit_text(text, reply_markup=back_kb(f"admin:partner_detail:{user_id}"))
     await call.answer()
 

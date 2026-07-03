@@ -647,15 +647,23 @@ def create_purchase(user_id, service_id, service_name, amount_paid):
 
 
 def get_user_purchases(user_id):
+    """
+    تمام خریدهای کاربر (بدون محدودیت تعداد) به همراه دسته‌بندی و ایمیل کلاینت VPN.
+    نکته: v.email می‌تونه NULL باشه اگه ساخت اکانت VPN بعد از پرداخت با خطا مواجه
+    شده باشه (مورد نادر، ولی از نظر دیتابیسی ممکنه).
+    """
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
         SELECT p.id, p.service_name, p.amount_paid, p.purchased_at,
-               COALESCE(c.name, '—') as category_name
+               COALESCE(c.name, '—') as category_name,
+               v.email
         FROM purchases p
         LEFT JOIN services s ON p.service_id = s.id
         LEFT JOIN categories c ON s.category_id = c.id
-        WHERE p.user_id=%s ORDER BY p.purchased_at DESC LIMIT 10
+        LEFT JOIN vpn_accounts v ON v.purchase_id = p.id
+        WHERE p.user_id=%s
+        ORDER BY p.purchased_at DESC
     """, (user_id,))
     rows = cur.fetchall()
     conn.close()
