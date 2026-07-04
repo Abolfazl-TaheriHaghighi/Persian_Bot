@@ -10,8 +10,8 @@ from db import (
     get_active_channels,
     connect as db_connect
 )
-from keyboards import get_kb
-from utils import run_db, chunk_blocks, send_chunks
+from keyboards import home_menu_kb, home_button_kb
+from utils import run_db, chunk_blocks, send_chunks, render_home
 
 router = Router()
 
@@ -51,13 +51,7 @@ async def recheck_membership(call: types.CallbackQuery):
     if not_joined:
         await call.answer("❌ هنوز عضو همه کانال‌ها نشدی!", show_alert=True)
     else:
-        await call.message.delete()
-        bal = await run_db(get_balance, call.from_user.id)
-        await call.message.answer(
-            f"✅ عضویت تایید شد!\n\n💰 موجودی: {bal:,} تومان",
-            reply_markup=get_kb(call.from_user.id)
-        )
-        await call.answer()
+        await render_home(call, call.from_user.id)
 
 
 # ================================================================
@@ -79,6 +73,10 @@ async def start(message: types.Message, state: FSMContext):
             referred_by = None
 
     await run_db(add_user, message.from_user.id, referred_by)
+
+    # اگه از قبل کیبورد ثابت (نسخه‌ی قدیمی ربات) روی گوشی کاربر مونده باشه، این
+    # پیام موقت اونو حذف می‌کنه — از این به بعد فقط دکمه‌های شیشه‌ای استفاده می‌شن
+    await message.answer("👋", reply_markup=types.ReplyKeyboardRemove())
 
     not_joined = await check_membership(message.bot, message.from_user.id)
     if not_joined:
@@ -115,35 +113,33 @@ async def start(message: types.Message, state: FSMContext):
                 except Exception:
                     pass
 
-    bal = await run_db(get_balance, message.from_user.id)
-    await message.answer(
-        f"👋 خوش اومدی به ربات VPN!\n\n💰 موجودی: {bal:,} تومان",
-        reply_markup=get_kb(message.from_user.id)
-    )
+    await render_home(message, message.from_user.id)
 
 
-@router.message(F.text == "🏠 خانه")
-async def home(message: types.Message, state: FSMContext):
+@router.callback_query(F.data == "menu:home")
+async def menu_home(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    not_joined = await check_membership(message.bot, message.from_user.id)
+    not_joined = await check_membership(call.bot, call.from_user.id)
     if not_joined:
-        await send_join_message(message, not_joined)
+        await call.message.edit_text("⛔️ برای استفاده از ربات باید عضو کانال‌های زیر بشی:")
+        await send_join_message(call.message, not_joined)
+        await call.answer()
         return
-    bal = await run_db(get_balance, message.from_user.id)
-    await message.answer(
-        f"🏠 صفحه اصلی\n\n💰 موجودی: {bal:,} تومان",
-        reply_markup=get_kb(message.from_user.id)
-    )
+    await render_home(call, call.from_user.id)
 
 
 # ================================================================
 # BALANCE
 # ================================================================
 
-@router.message(F.text == "💰 موجودی من")
-async def balance(message: types.Message):
-    bal = await run_db(get_balance, message.from_user.id)
-    await message.answer(f"💰 موجودی شما: {bal:,} تومان")
+@router.callback_query(F.data == "menu:balance")
+async def menu_balance(call: types.CallbackQuery):
+    bal = await run_db(get_balance, call.from_user.id)
+    await call.message.edit_text(
+        f"💰 موجودی شما: {bal:,} تومان",
+        reply_markup=home_button_kb()
+    )
+    await call.answer()
 
 
 # ================================================================
@@ -166,32 +162,15 @@ def _fmt_total_bytes(b) -> str:
     return f"{b / 1024:.0f} KB"
 
 
-def _fmt_time_left(target_dt) -> str:
-    import datetime
-    now = datetime.datetime.now()
-    diff = target_dt - now
-    if diff.total_seconds() <= 0:
-        return "⛔️ منقضی شده"
-    days = diff.days
-    hours = diff.seconds // 3600
-    if days > 0:
-        return f"⏳ {days} روز و {hours} ساعت مونده"
-    minutes = (diff.seconds % 3600) // 60
-    if hours > 0:
-        return f"⏳ {hours} ساعت و {minutes} دقیقه مونده"
-    return f"⏳ {minutes} دقیقه مونده"
-
-
-# تلگرام حداکثر ۴۰۹۶ کاراکتر برای هر پیام قبول می‌کنه. مقدار پایین‌تر برای
-# حاشیه‌ی امن در نظر گرفته شده (چون header/footer هم به هر chunk اضافه می‌شن)
-@router.message(F.text == "📊 وضعیت سرویس‌ها")
-async def service_status(message: types.Message):
+@router.callback_query(F.data == "menu:status")
+async def menu_status(call: types.CallbackQuery):
     import html
     from db import get_user_vpn_accounts
 
-    accounts = await run_db(get_user_vpn_accounts, message.from_user.id)
+    accounts = await run_db(get_user_vpn_accounts, call.from_user.id)
     if not accounts:
-        await message.answer("📊 هنوز سرویس فعالی نداری.")
+        await call.message.edit_text("📊 هنوز سرویس فعالی نداری.", reply_markup=home_button_kb())
+        await call.answer()
         return
 
     sep = "─" * 22
@@ -201,8 +180,6 @@ async def service_status(message: types.Message):
         "داخل اپلیکیشن VPN خودت وارد کن و از همون‌جا وضعیت سرویست رو ببین."
     )
 
-    # هر سرویس به‌صورت یک بلوک کامل و جدا ساخته می‌شه، تا موقع تقسیم پیام هیچ‌وقت
-    # وسط یک <code> یا یک سرویس بریده نشه (که باعث خطای HTML entity می‌شد)
     blocks = []
     for acc in accounts:
         (email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db,
@@ -210,11 +187,6 @@ async def service_status(message: types.Message):
 
         label = "🧪 تست رایگان" if is_trial else "💎 سرویس"
 
-        # نکته‌ی امنیتی: ایمیل، نام سرویس، دسته‌بندی و لینک ساب همگی مقادیر
-        # داینامیک هستن (بعضی‌شون از قبل با فرمت قدیمی دارای _ ساخته شدن) و اگه
-        # با parse_mode="Markdown" (نسخه‌ی قدیمی و شکننده) فرستاده بشن، یک _ یا *
-        # جفت‌نشده باعث خطای "can't find end of the entity" و کرش کل پیام می‌شه.
-        # برای همین از HTML استفاده می‌کنیم و همه‌ی مقادیر داینامیک رو escape می‌کنیم.
         safe_service_name = html.escape(service_name or "")
         safe_category_name = html.escape(category_name or "")
         safe_email = html.escape(email or "")
@@ -226,17 +198,12 @@ async def service_status(message: types.Message):
         if not is_trial:
             block += f"🗂 دسته‌بندی: {safe_category_name}\n"
         block += f"📧 ایمیل کلاینت: {safe_email}\n"
-
         block += f"📶 حجم کل: {_fmt_total_bytes(data_limit_db)}\n"
 
         if sub_url:
             safe_sub_url = html.escape(sub_url)
             block += f"🔗 لینک سابسکریپشن:\n<code>{safe_sub_url}</code>\n"
 
-            # طبق داکیومنت پنل، همین لینک ساب با ?html=1 یک صفحه‌ی وضعیت زنده
-            # (ترافیک مصرفی/باقی‌مانده، انقضا) رو مستقیماً از خودِ پنل رندر می‌کنه —
-            # پس نیازی به تماس ربات با API پنل نیست. اینجا به‌جای <code> از <a> استفاده
-            # می‌شه تا با یک تپ داخل مرورگر باز بشه.
             separator = "&" if "?" in sub_url else "?"
             live_status_url = f"{sub_url}{separator}html=1"
             safe_live_status_url = html.escape(live_status_url, quote=True)
@@ -252,26 +219,28 @@ async def service_status(message: types.Message):
         blocks.append(block)
 
     chunks = chunk_blocks(header, blocks, footer)
-    await send_chunks(message, chunks, parse_mode="HTML")
+    await call.message.edit_text(chunks[0], parse_mode="HTML")
+    if len(chunks) > 1:
+        await send_chunks(call.message, chunks[1:], parse_mode="HTML")
+    await call.message.answer("👇", reply_markup=home_button_kb())
+    await call.answer()
 
 
 # ================================================================
 # PURCHASE HISTORY
 # ================================================================
 
-@router.message(F.text == "📋 خریدهای من")
-async def my_purchases(message: types.Message):
-    purchases = await run_db(get_user_purchases, message.from_user.id)
+@router.callback_query(F.data == "menu:purchases")
+async def menu_purchases(call: types.CallbackQuery):
+    purchases = await run_db(get_user_purchases, call.from_user.id)
     if not purchases:
-        await message.answer("📋 هنوز خریدی نداشتی.")
+        await call.message.edit_text("📋 هنوز خریدی نداشتی.", reply_markup=home_button_kb())
+        await call.answer()
         return
 
     sep = "─" * 22
     header = f"📋 تاریخچه خریدهای شما\n{sep}\n"
 
-    # هر خرید یک بلوک کامل و جدا ساخته می‌شه، تا موقع تقسیم پیام (chunk کردن)
-    # هیچ‌وقت وسط یک خرید بریده نشه — چون دیگه محدودیت تعداد (LIMIT) نداریم،
-    # ممکنه تعداد خریدها زیاد بشه و از سقف ۴۰۹۶ کاراکتری تلگرام رد بشه.
     blocks = []
     for p in purchases:
         pid, sname, amt, pat, category_name, email = p
@@ -286,4 +255,8 @@ async def my_purchases(message: types.Message):
         )
 
     chunks = chunk_blocks(header, blocks)
-    await send_chunks(message, chunks)
+    await call.message.edit_text(chunks[0])
+    if len(chunks) > 1:
+        await send_chunks(call.message, chunks[1:])
+    await call.message.answer("👇", reply_markup=home_button_kb())
+    await call.answer()

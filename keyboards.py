@@ -1,21 +1,36 @@
-from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton,
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import ADMIN_ID, is_admin
 
 
-def get_kb(user_id):
-    base = [
-        [KeyboardButton(text="🏠 خانه"), KeyboardButton(text="📊 وضعیت سرویس‌ها")],
-        [KeyboardButton(text="💰 موجودی من"), KeyboardButton(text="📋 خریدهای من")],
-        [KeyboardButton(text="➕ شارژ حساب"), KeyboardButton(text="🛒 خرید سرویس")],
-        [KeyboardButton(text="🎁 تست رایگان"), KeyboardButton(text="👥 رفرال من")],
-        [KeyboardButton(text="🤝 درخواست همکاری")],
+def home_menu_kb(user_id) -> InlineKeyboardMarkup:
+    """
+    منوی اصلی شیشه‌ای — جایگزین کیبورد ثابت پایین صفحه (get_kb قدیمی).
+    همه‌ی گزینه‌ها inline هستن تا چت شلوغ نشه و همه‌چیز با edit_text پیش بره.
+    """
+    buttons = [
+        [InlineKeyboardButton(text="📊 وضعیت سرویس‌ها", callback_data="menu:status"),
+         InlineKeyboardButton(text="💰 موجودی من", callback_data="menu:balance")],
+        [InlineKeyboardButton(text="📋 خریدهای من", callback_data="menu:purchases"),
+         InlineKeyboardButton(text="➕ شارژ حساب", callback_data="menu:deposit")],
+        [InlineKeyboardButton(text="🛒 خرید سرویس", callback_data="menu:shop"),
+         InlineKeyboardButton(text="🎁 تست رایگان", callback_data="menu:trial")],
+        [InlineKeyboardButton(text="👥 رفرال من", callback_data="menu:referral"),
+         InlineKeyboardButton(text="🤝 درخواست همکاری", callback_data="menu:partner")],
     ]
     if is_admin(user_id):
-        base.append([KeyboardButton(text="🛠 پنل ادمین")])
-    return ReplyKeyboardMarkup(keyboard=base, resize_keyboard=True)
+        buttons.append([InlineKeyboardButton(text="🛠 پنل ادمین", callback_data="menu:admin")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def home_button_kb() -> InlineKeyboardMarkup:
+    """
+    دکمه‌ی تکی «بازگشت به خانه» — جایگزین عمومی get_kb() قدیمی، برای پایان هر
+    عملیات (خرید، شارژ، تست رایگان و...). با تپ روی این، render_home() صدا زده
+    می‌شه و همون پیام به صفحه‌ی خانه‌ی کامل تبدیل می‌شه.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="menu:home")]
+    ])
 
 
 def back_kb(cb: str):
@@ -44,7 +59,9 @@ def admin_panel_kb():
         [InlineKeyboardButton(text="📣 ارسال پیام گروهی",       callback_data="admin:broadcast")],
         [InlineKeyboardButton(text="🎛 پلن‌های دلخواه",          callback_data="admin:custom_plans")],
         [InlineKeyboardButton(text="🏷 نام‌گذاری کلاینت‌ها",     callback_data="admin:naming")],
+        [InlineKeyboardButton(text="💾 پشتیبان‌گیری از دیتابیس", callback_data="admin:backup")],
         [InlineKeyboardButton(text="🔑 لایسنس",                  callback_data="admin:license")],
+        [InlineKeyboardButton(text="🏠 بازگشت به خانه",           callback_data="menu:home")],
     ])
 
 
@@ -55,6 +72,7 @@ def categories_kb(categories):
         is_custom = c[3] if len(c) > 3 else False
         cb = f"customcat:{cid}" if is_custom else f"cat:{cid}"
         buttons.append([InlineKeyboardButton(text=f"{emoji} {name}", callback_data=cb)])
+    buttons.append([InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -186,6 +204,21 @@ def admin_referral_menu_kb(cfg):
         [InlineKeyboardButton(text=f"🛍 پاداش خریدهای بعدی (ثابت): {reward_purchase:,} تومان", callback_data="admin:ref_set:reward_on_purchase")],
         [InlineKeyboardButton(text=f"📊 پاداش خریدهای بعدی (درصد): {reward_pct}%", callback_data="admin:ref_set:reward_purchase_percent")],
         [InlineKeyboardButton(text="📋 تاریخچه پاداش‌ها", callback_data="admin:ref_history")],
+        [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
+    ])
+
+
+def admin_backup_kb(cfg):
+    """کیبورد منوی پشتیبان‌گیری از دیتابیس"""
+    bot_token, admin_id, interval_hours, last_backup_at = cfg if cfg else (None, None, 0, None)
+    token_label = "✅ تنظیم شده" if bot_token else "❌ تنظیم نشده"
+    admin_label = str(admin_id) if admin_id else "❌ تنظیم نشده"
+    interval_label = f"هر {interval_hours} ساعت" if interval_hours and interval_hours > 0 else "❌ غیرفعال"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🔑 توکن ربات بکاپ: {token_label}", callback_data="admin:backup_set_token")],
+        [InlineKeyboardButton(text=f"🆔 آیدی گیرنده: {admin_label}", callback_data="admin:backup_set_admin")],
+        [InlineKeyboardButton(text="⚡️ بکاپ‌گیری لحظه‌ای", callback_data="admin:backup_now")],
+        [InlineKeyboardButton(text=f"⏰ بکاپ خودکار: {interval_label}", callback_data="admin:backup_set_interval")],
         [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
     ])
 

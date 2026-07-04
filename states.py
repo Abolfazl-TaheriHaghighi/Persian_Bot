@@ -138,3 +138,10 @@ class AdminClientNaming(StatesGroup):
 # ---- برچسب گروه اختصاصی هر همکار ----
 class AdminPartnerGroupLabel(StatesGroup):
     waiting_label = State()
+
+
+# ---- تنظیمات پشتیبان‌گیری از دیتابیس ----
+class AdminBackupConfig(StatesGroup):
+    waiting_bot_token = State()
+    waiting_admin_id = State()
+    waiting_interval = State()

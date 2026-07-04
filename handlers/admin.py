@@ -20,7 +20,7 @@ from db import (
     connect as db_connect
 )
 from keyboards import (
-    get_kb, back_kb, admin_panel_kb,
+    home_button_kb, back_kb, admin_panel_kb,
     admin_categories_kb, admin_services_kb, admin_svc_detail_kb,
     admin_edit_svc_fields_kb, admin_discounts_kb,
     admin_trial_menu_kb, admin_referral_menu_kb, admin_naming_kb
@@ -43,11 +43,12 @@ router = Router()
 # ADMIN PANEL
 # ================================================================
 
-@router.message(F.text == "🛠 پنل ادمین")
-async def admin_panel(message: types.Message):
-    if not is_admin(message.from_user.id):
+@router.callback_query(F.data == "menu:admin")
+async def admin_panel(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
         return
-    await message.answer("🛠 پنل مدیریت:", reply_markup=admin_panel_kb())
+    await call.message.edit_text("🛠 پنل مدیریت:", reply_markup=admin_panel_kb())
+    await call.answer()
 
 
 @router.callback_query(F.data == "admin:back")
@@ -172,7 +173,7 @@ async def admin_add_cat_emoji(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"✅ دسته‌بندی اضافه شد!\n{emoji} {data['name']}\n🔑 ID: {cid}",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -318,7 +319,7 @@ async def admin_save_edit(message: types.Message, state: FSMContext):
 
     await run_db(update_service, sid, field, value)
     await state.clear()
-    await message.answer("✅ سرویس آپدیت شد!", reply_markup=get_kb(message.from_user.id))
+    await message.answer("✅ سرویس آپدیت شد!", reply_markup=home_button_kb())
 
 
 # ---- افزودن سرویس ----
@@ -397,7 +398,7 @@ async def admin_add_svc_data(message: types.Message, state: FSMContext):
     await message.answer(
         f"✅ سرویس اضافه شد!\n\n📦 {data['name']}\n"
         f"💰 {data['price']:,} تومان | ⏳ {data['duration']} روز | {format_data(data_gb)}\n🔑 ID: {sid}",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -484,7 +485,7 @@ async def admin_discount_max_uses(message: types.Message, state: FSMContext):
         f"💸 مقدار: {data['discount_value']} {type_label}\n"
         f"🔢 حداکثر استفاده: {'نامحدود' if max_uses == 0 else max_uses}\n"
         f"🔑 ID: {cid}",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -574,7 +575,7 @@ async def admin_edit_balance_amount(message: types.Message, state: FSMContext, b
         notif = "⚠️ کاربر ربات رو بلاک کرده"
     await message.answer(
         f"✅ موجودی کاربر {uid} {action}\n💰 موجودی جدید: {new_bal:,} تومان\n{notif}",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -652,7 +653,7 @@ async def admin_trial_save_field(message: types.Message, state: FSMContext):
 
     await run_db(update_trial_config, **{field: value})
     await state.clear()
-    await message.answer("✅ تنظیمات تست ذخیره شد.", reply_markup=get_kb(message.from_user.id))
+    await message.answer("✅ تنظیمات تست ذخیره شد.", reply_markup=home_button_kb())
 
 
 @router.callback_query(F.data == "admin:trial_phones")
@@ -705,7 +706,7 @@ async def admin_trial_phone_input(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer(
             f"✅ Override شماره {phone} حذف شد.",
-            reply_markup=get_kb(message.from_user.id)
+            reply_markup=home_button_kb()
         )
         return
 
@@ -716,7 +717,7 @@ async def admin_trial_phone_input(message: types.Message, state: FSMContext):
         await message.answer(
             f"✅ تاریخچه تست شماره {phone} ریست شد.\n"
             f"این شماره می‌تونه دوباره تست بگیره.",
-            reply_markup=get_kb(message.from_user.id)
+            reply_markup=home_button_kb()
         )
         return
 
@@ -737,7 +738,7 @@ async def admin_trial_phone_max_uses(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"✅ تنظیم شد!\n📱 {phone}: حداکثر {max_uses} بار تست",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -845,7 +846,7 @@ async def admin_ref_save_field(message: types.Message, state: FSMContext):
 
     await run_db(update_referral_config, **{field: value})
     await state.clear()
-    await message.answer("✅ تنظیمات رفرال ذخیره شد.", reply_markup=get_kb(message.from_user.id))
+    await message.answer("✅ تنظیمات رفرال ذخیره شد.", reply_markup=home_button_kb())
 
 
 @router.callback_query(F.data == "admin:ref_history")
@@ -1002,7 +1003,7 @@ async def admin_ch_invite_input(message: types.Message, state: FSMContext):
         f"✅ کانال اضافه شد!\n"
         f"📢 {data.get('channel_title', data['channel_id'])}\n"
         f"🔑 ID: {cid}",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -1138,7 +1139,7 @@ async def admin_panel_save_field(message: types.Message, state: FSMContext):
     from panel import invalidate_panel_cache
     invalidate_panel_cache()
     await state.clear()
-    await message.answer("✅ ذخیره شد.", reply_markup=get_kb(message.from_user.id))
+    await message.answer("✅ ذخیره شد.", reply_markup=home_button_kb())
 
 
 @router.callback_query(F.data == "admin:panel_test")
@@ -1280,7 +1281,7 @@ async def admin_partner_set_label_save(message: types.Message, state: FSMContext
     await state.clear()
     await message.answer(
         f"✅ برچسب گروه ذخیره شد: {label or '(پیش‌فرض)'}",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -1408,7 +1409,7 @@ async def admin_partner_add_phone(message: types.Message, state: FSMContext, bot
         pass
     await message.answer(
         f"✅ کاربر {uid} به عنوان همکار اضافه شد.",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -1606,7 +1607,7 @@ async def admin_cat_custom_add_save(message: types.Message, state: FSMContext):
     if not_found:
         text += "❌ پیدا نشدن یا فرمت اشتباه:\n" + "\n".join(not_found)
 
-    await message.answer(text or "هیچی پردازش نشد.", reply_markup=get_kb(message.from_user.id))
+    await message.answer(text or "هیچی پردازش نشد.", reply_markup=home_button_kb())
 
 
 @router.callback_query(F.data.startswith("admin:cat_custom_del:"))
@@ -1688,7 +1689,7 @@ async def admin_custom_cat_add_save(message: types.Message, state: FSMContext):
     await message.answer(
         f"✅ دسته‌بندی پلن دلخواه ساخته شد!\n🎛 {name}\n🔑 ID: {cid}\n\n"
         f"حالا باید زیرگروه‌هاش رو اضافه کنی.",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -1747,7 +1748,7 @@ async def admin_custom_grp_add_emoji(message: types.Message, state: FSMContext):
     await message.answer(
         f"✅ زیرگروه ساخته شد!\n{emoji} {data['grp_name']}\n🔑 ID: {gid}\n\n"
         f"⚠️ یادت نره قیمت‌ها، حداقل/حداکثر و inbound ها رو از جزئیات زیرگروه تنظیم کنی.",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -1862,7 +1863,7 @@ async def admin_custom_grp_edit_save(message: types.Message, state: FSMContext):
     if field == "name":
         await run_db(update_custom_group, group_id, "name", raw)
         await state.clear()
-        await message.answer("✅ نام آپدیت شد.", reply_markup=get_kb(message.from_user.id))
+        await message.answer("✅ نام آپدیت شد.", reply_markup=home_button_kb())
         return
 
     if field in ("price_per_gb", "price_per_day"):
@@ -1871,7 +1872,7 @@ async def admin_custom_grp_edit_save(message: types.Message, state: FSMContext):
             return
         await run_db(update_custom_group, group_id, field, int(raw))
         await state.clear()
-        await message.answer("✅ قیمت آپدیت شد.", reply_markup=get_kb(message.from_user.id))
+        await message.answer("✅ قیمت آپدیت شد.", reply_markup=home_button_kb())
         return
 
     if field == "gb_range":
@@ -1889,7 +1890,7 @@ async def admin_custom_grp_edit_save(message: types.Message, state: FSMContext):
         await run_db(update_custom_group, group_id, "min_gb", min_v)
         await run_db(update_custom_group, group_id, "max_gb", max_v)
         await state.clear()
-        await message.answer("✅ محدوده حجم آپدیت شد.", reply_markup=get_kb(message.from_user.id))
+        await message.answer("✅ محدوده حجم آپدیت شد.", reply_markup=home_button_kb())
         return
 
     if field == "days_range":
@@ -1907,7 +1908,7 @@ async def admin_custom_grp_edit_save(message: types.Message, state: FSMContext):
         await run_db(update_custom_group, group_id, "min_days", min_v)
         await run_db(update_custom_group, group_id, "max_days", max_v)
         await state.clear()
-        await message.answer("✅ محدوده روز آپدیت شد.", reply_markup=get_kb(message.from_user.id))
+        await message.answer("✅ محدوده روز آپدیت شد.", reply_markup=home_button_kb())
         return
 
     if field == "inbound_ids":
@@ -1921,11 +1922,11 @@ async def admin_custom_grp_edit_save(message: types.Message, state: FSMContext):
             value = ",".join(ids)
         await run_db(update_custom_group, group_id, "inbound_ids", value)
         await state.clear()
-        await message.answer("✅ Inbound IDs آپدیت شد.", reply_markup=get_kb(message.from_user.id))
+        await message.answer("✅ Inbound IDs آپدیت شد.", reply_markup=home_button_kb())
         return
 
     await state.clear()
-    await message.answer("❌ خطای ناشناخته.", reply_markup=get_kb(message.from_user.id))
+    await message.answer("❌ خطای ناشناخته.", reply_markup=home_button_kb())
 
 
 # ================================================================
@@ -2008,7 +2009,7 @@ async def admin_naming_set_prefix_save(message: types.Message, state: FSMContext
     await message.answer(
         f"✅ پیشوند تنظیم شد: {sanitized}\n"
         f"👀 نمونه‌ی بعدی که ساخته می‌شه: {sanitized}{next_number}",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -2037,7 +2038,7 @@ async def admin_naming_set_group_save(message: types.Message, state: FSMContext)
     await state.clear()
     await message.answer(
         f"✅ گروه پیش‌فرض کاربران عادی تنظیم شد: {group_name}",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -2052,3 +2053,157 @@ async def admin_naming_reset(call: types.CallbackQuery):
     if cfg and cfg[0]:
         text += "\n\n⚠️ اگه کلاینت‌های قبلی با اعداد کوچیک‌تر هنوز فعالن، نام‌های تکراری ساخته می‌شن."
     await call.message.edit_text(text, reply_markup=admin_naming_kb(cfg))
+
+
+# ================================================================
+# DATABASE BACKUP (پشتیبان‌گیری با ربات جداگانه)
+# ================================================================
+
+from db import get_backup_config, update_backup_config, update_backup_last_run
+from states import AdminBackupConfig
+from keyboards import admin_backup_kb
+
+
+def _format_backup_menu_text(cfg) -> str:
+    bot_token, admin_id, interval_hours, last_backup_at = cfg if cfg else (None, None, 0, None)
+    sep = "─" * 22
+    token_status = "✅ تنظیم شده" if bot_token else "❌ تنظیم نشده"
+    admin_status = str(admin_id) if admin_id else "❌ تنظیم نشده"
+    interval_status = f"هر {interval_hours} ساعت" if interval_hours and interval_hours > 0 else "❌ غیرفعال"
+    last_backup_text = last_backup_at.strftime("%Y-%m-%d %H:%M") if last_backup_at else "هنوز گرفته نشده"
+
+    return (
+        f"💾 پشتیبان‌گیری از دیتابیس\n{sep}\n"
+        f"این قابلیت با یک ربات تلگرام جداگانه (نه همین بات فروش) بکاپ کامل دیتابیس رو "
+        f"برات ارسال می‌کنه — اگه سرور اصلی از دسترس خارج بشه، بازم بکاپت دستته.\n{sep}\n"
+        f"🔑 توکن ربات بکاپ: {token_status}\n"
+        f"🆔 آیدی گیرنده: {admin_status}\n"
+        f"⏰ بکاپ خودکار: {interval_status}\n"
+        f"📅 آخرین بکاپ: {last_backup_text}\n{sep}\n"
+        f"⚠️ نکته‌ی مهم: قبل از استفاده، حتماً یک‌بار با آیدی گیرنده به ربات بکاپ "
+        f"/start بزن — تلگرام اجازه نمی‌ده بات بدون این کار پیام شروع کنه."
+    )
+
+
+@router.callback_query(F.data == "admin:backup")
+async def admin_backup_menu(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cfg = await run_db(get_backup_config)
+    await call.message.edit_text(_format_backup_menu_text(cfg), reply_markup=admin_backup_kb(cfg))
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:backup_set_token")
+async def admin_backup_set_token_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminBackupConfig.waiting_bot_token)
+    await call.message.answer(
+        "🔑 توکن ربات تلگرامی که قراره بکاپ رو ارسال کنه رو وارد کن.\n\n"
+        "⚠️ این باید یک ربات جداگانه از همین بات فروش باشه (از @BotFather بگیرش)، "
+        "چون هدف اینه که اگه سرور اصلی از کار افتاد، این ربات مستقل بتونه بکاپ رو برسونه.\n\n"
+        "مثال فرمت: 123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    )
+    await call.answer()
+
+
+@router.message(AdminBackupConfig.waiting_bot_token)
+async def admin_backup_set_token_save(message: types.Message, state: FSMContext):
+    token = message.text.strip()
+    if ":" not in token or len(token) < 30:
+        await message.answer("❌ توکن نامعتبر به نظر میرسه. دوباره وارد کن:")
+        return
+
+    await run_db(update_backup_config, backup_bot_token=token)
+    await state.clear()
+
+    # توکن کامل رو دوباره توی چت نمایش نمی‌دیم (فقط یه نسخه‌ی ماسک‌شده)، تا در
+    # صورت اسکرول بالا رفتن چت، توکن کامل راحت لو نره
+    masked = f"{token[:6]}...{token[-4:]}"
+    await message.answer(
+        f"✅ توکن ذخیره شد: {masked}\n\n"
+        f"⚠️ یادت نره حالا با آیدی گیرنده‌ی بکاپ، یک‌بار به همین ربات /start بزنی.",
+        reply_markup=home_button_kb()
+    )
+
+
+@router.callback_query(F.data == "admin:backup_set_admin")
+async def admin_backup_set_admin_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminBackupConfig.waiting_admin_id)
+    await call.message.answer(
+        "🆔 آیدی عددی تلگرام کسی که قراره بکاپ رو دریافت کنه وارد کن.\n\n"
+        "⚠️ این آیدی باید قبلاً یک‌بار به ربات بکاپ /start زده باشه."
+    )
+    await call.answer()
+
+
+@router.message(AdminBackupConfig.waiting_admin_id)
+async def admin_backup_set_admin_save(message: types.Message, state: FSMContext):
+    raw = message.text.strip()
+    if not raw.isdigit():
+        await message.answer("❌ فقط عدد وارد کن:")
+        return
+
+    await run_db(update_backup_config, backup_admin_id=int(raw))
+    await state.clear()
+    await message.answer(
+        f"✅ آیدی گیرنده‌ی بکاپ ذخیره شد: {raw}",
+        reply_markup=home_button_kb()
+    )
+
+
+@router.callback_query(F.data == "admin:backup_now")
+async def admin_backup_now(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+
+    cfg = await run_db(get_backup_config)
+    bot_token, admin_id, interval_hours, last_backup_at = cfg if cfg else (None, None, 0, None)
+    if not bot_token or not admin_id:
+        await call.answer("❌ اول توکن ربات بکاپ و آیدی گیرنده رو تنظیم کن", show_alert=True)
+        return
+
+    await call.answer("⏳ در حال گرفتن بکاپ...")
+    await call.message.answer("⏳ در حال گرفتن بکاپ از دیتابیس... (بسته به حجم دیتابیس چند لحظه طول می‌کشه)")
+
+    from backup import send_backup_now
+    ok, result_msg = await send_backup_now(bot_token, admin_id)
+    if ok:
+        await run_db(update_backup_last_run)
+
+    await call.message.answer(result_msg)
+
+
+@router.callback_query(F.data == "admin:backup_set_interval")
+async def admin_backup_set_interval_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminBackupConfig.waiting_interval)
+    await call.message.answer(
+        "⏰ هر چند ساعت یک‌بار بکاپ خودکار گرفته و ارسال بشه؟\n"
+        "یک عدد صحیح وارد کن (مثلاً 6 برای هر ۶ ساعت).\n\n"
+        "برای غیرفعال کردن کامل بکاپ خودکار، عدد 0 رو وارد کن:"
+    )
+    await call.answer()
+
+
+@router.message(AdminBackupConfig.waiting_interval)
+async def admin_backup_set_interval_save(message: types.Message, state: FSMContext):
+    raw = message.text.strip()
+    if not raw.isdigit():
+        await message.answer("❌ فقط عدد صحیح (۰ یا بیشتر):")
+        return
+
+    hours = int(raw)
+    await run_db(update_backup_config, auto_interval_hours=hours)
+    await state.clear()
+
+    if hours == 0:
+        text = "✅ بکاپ خودکار غیرفعال شد."
+    else:
+        text = f"✅ بکاپ خودکار فعال شد: هر {hours} ساعت یک‌بار."
+
+    await message.answer(text, reply_markup=home_button_kb())

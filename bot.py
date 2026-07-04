@@ -8,6 +8,7 @@ from config import BOT_TOKEN, ADMIN_ID
 from db import init_db, update_license_checked
 from license import check_license_from_db, warm_cache, clear_cache
 from utils import run_db
+from backup import auto_backup_loop
 
 from handlers import user, payments, services, referral, admin, partner, broadcast
 from handlers import license_handler
@@ -79,6 +80,9 @@ async def main():
     dp.include_router(admin.router)
 
     asyncio.create_task(daily_license_check(bot))
+    # حلقه‌ی بکاپ خودکار دیتابیس — هر ساعت چک می‌کنه که آیا طبق تنظیمات ادمین
+    # (از پنل ادمین → پشتیبان‌گیری) وقتشه بکاپ بگیره یا نه
+    asyncio.create_task(auto_backup_loop())
 
     await dp.start_polling(bot)
 

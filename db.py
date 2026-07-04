@@ -302,6 +302,18 @@ def init_db():
     # برچسب گروه پیش‌فرض روی پنل برای کاربران عادی (غیر ادمین، غیر همکار)
     cur.execute("ALTER TABLE client_naming_config ADD COLUMN IF NOT EXISTS default_group TEXT NOT NULL DEFAULT ''")
 
+    # ---- تنظیمات پشتیبان‌گیری از دیتابیس (بکاپ با ربات جداگانه) ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS backup_config (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            backup_bot_token TEXT DEFAULT NULL,
+            backup_admin_id BIGINT DEFAULT NULL,
+            auto_interval_hours INTEGER DEFAULT 0,
+            last_backup_at TIMESTAMP DEFAULT NULL
+        )
+    """)
+    cur.execute("INSERT INTO backup_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+
     conn.commit()
     conn.close()
 
@@ -1587,3 +1599,44 @@ def get_custom_access_category_ids(user_id):
     rows = [r[0] for r in cur.fetchall()]
     conn.close()
     return rows
+
+
+# ================== DATABASE BACKUP CONFIG ==================
+
+def get_backup_config():
+    """برمی‌گردونه (backup_bot_token, backup_admin_id, auto_interval_hours, last_backup_at)"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT backup_bot_token, backup_admin_id, auto_interval_hours, last_backup_at
+        FROM backup_config WHERE id=1
+    """)
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+
+def update_backup_config(**kwargs):
+    """
+    آپدیت یک یا چند فیلد از تنظیمات بکاپ. کلیدهای مجاز از یک whitelist ثابت
+    میان (نه از ورودی کاربر)، پس امکان SQL injection از طریق نام ستون وجود نداره؛
+    مقادیر هم همیشه با %s پارامتری می‌شن.
+    """
+    allowed = {"backup_bot_token", "backup_admin_id", "auto_interval_hours"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if not fields:
+        return
+    set_clause = ", ".join(f"{k}=%s" for k in fields)
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE backup_config SET {set_clause} WHERE id=1", list(fields.values()))
+    conn.commit()
+    conn.close()
+
+
+def update_backup_last_run():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE backup_config SET last_backup_at=NOW() WHERE id=1")
+    conn.commit()
+    conn.close()

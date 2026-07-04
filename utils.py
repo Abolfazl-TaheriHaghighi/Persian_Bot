@@ -1,5 +1,6 @@
 import asyncio
 import re
+from aiogram import types
 from config import ADMIN_IDS
 
 
@@ -128,3 +129,31 @@ async def send_chunks(message, chunks: list, parse_mode: str | None = None):
         await message.answer(chunk, parse_mode=parse_mode)
         if len(chunks) > 1:
             await asyncio.sleep(0.05)
+
+
+# ================== HOME SCREEN (منوی شیشه‌ای اصلی) ==================
+
+async def render_home(target, user_id: int):
+    """
+    صفحه‌ی خانه رو می‌سازه و نمایش می‌ده — تنها نقطه‌ی ساخت صفحه‌ی خانه است تا
+    همه‌ی مسیرهای «🏠 بازگشت به خانه» دقیقاً یکسان رفتار کنن (بدون کد تکراری).
+    اگه target از نوع CallbackQuery باشه، همون پیام رو ویرایش می‌کنه (edit_text)
+    تا چت تمیز بمونه؛ اگه از نوع Message باشه (مثلاً دستور /start)، پیام جدید می‌فرسته.
+    """
+    from db import get_balance
+    from keyboards import home_menu_kb
+
+    bal = await run_db(get_balance, user_id)
+    sep = "─" * 22
+    text = (
+        f"🏠 خانه\n{sep}\n"
+        f"💰 موجودی: {bal:,} تومان\n{sep}\n"
+        f"یکی از گزینه‌های زیر رو انتخاب کن:"
+    )
+    kb = home_menu_kb(user_id)
+
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=kb)
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=kb)

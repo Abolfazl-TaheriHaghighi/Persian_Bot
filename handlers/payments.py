@@ -6,17 +6,18 @@ from config import ADMIN_ID, is_admin
 from db import (
     create_transaction, approve_transaction, reject_transaction, get_balance
 )
-from keyboards import get_kb
+from keyboards import home_button_kb
 from states import DepositStates, RejectReason
 from utils import run_db, notify_admins
 
 router = Router()
 
 
-@router.message(F.text == "➕ شارژ حساب")
-async def deposit(message: types.Message, state: FSMContext):
+@router.callback_query(F.data == "menu:deposit")
+async def deposit(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(DepositStates.waiting_for_amount)
-    await message.answer("💰 مبلغ واریزی رو فقط به عدد وارد کن (تومان):")
+    await call.message.edit_text("💰 مبلغ واریزی رو فقط به عدد وارد کن (تومان):")
+    await call.answer()
 
 
 @router.message(DepositStates.waiting_for_amount)
@@ -62,7 +63,7 @@ async def handle_receipt(message: types.Message, state: FSMContext, bot: Bot):
         except Exception:
             pass
     await state.clear()
-    await message.answer("📤 فیش ارسال شد، منتظر تایید ادمین باش.", reply_markup=get_kb(user_id))
+    await message.answer("📤 فیش ارسال شد، منتظر تایید ادمین باش.", reply_markup=home_button_kb())
 
 
 @router.message(DepositStates.waiting_for_receipt)
@@ -120,4 +121,4 @@ async def reject_with_reason(message: types.Message, state: FSMContext, bot: Bot
     except Exception:
         pass
     await state.clear()
-    await message.answer("✅ رد شد و به کاربر اطلاع داده شد.", reply_markup=get_kb(message.from_user.id))
+    await message.answer("✅ رد شد و به کاربر اطلاع داده شد.", reply_markup=home_button_kb())
