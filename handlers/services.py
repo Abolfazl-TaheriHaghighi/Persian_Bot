@@ -16,7 +16,7 @@ from db import (
     get_custom_groups, get_custom_group,
 )
 from panel import create_vpn_account
-from keyboards import get_kb, categories_kb, services_kb, invoice_kb, back_kb, custom_groups_kb
+from keyboards import categories_kb, services_kb, invoice_kb, back_kb, custom_groups_kb, home_button_kb
 from states import ApplyDiscount, CustomPlanOrder
 from utils import format_data, run_db, notify_admins, prepare_new_client
 
@@ -38,18 +38,20 @@ def _make_qr(data: str) -> io.BytesIO:
 # SHOP
 # ================================================================
 
-@router.message(F.text == "🛒 خرید سرویس")
-async def shop_start(message: types.Message):
-    partner = await run_db(is_partner, message.from_user.id)
-    categories = await run_db(get_categories_for_user, partner, message.from_user.id)
+@router.callback_query(F.data == "menu:shop")
+async def shop_start(call: types.CallbackQuery):
+    partner = await run_db(is_partner, call.from_user.id)
+    categories = await run_db(get_categories_for_user, partner, call.from_user.id)
     if not categories:
-        await message.answer("❌ در حال حاضر دسته‌بندی‌ای وجود نداره.")
+        await call.message.edit_text("❌ در حال حاضر دسته‌بندی‌ای وجود نداره.", reply_markup=home_button_kb())
+        await call.answer()
         return
-    bal = await run_db(get_balance, message.from_user.id)
-    await message.answer(
+    bal = await run_db(get_balance, call.from_user.id)
+    await call.message.edit_text(
         f"🛒 فروشگاه\n💰 موجودی شما: {bal:,} تومان\n\nیه دسته‌بندی انتخاب کن:",
         reply_markup=categories_kb(categories)
     )
+    await call.answer()
 
 
 @router.callback_query(F.data == "shop:back")
@@ -246,8 +248,10 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
         f"💰 پرداخت شد:  {final_price:,} تومان\n"
         f"👛 موجودی:       {new_bal:,} تومان\n{sep}\n"
         f"🔑 شماره سفارش: #{purchase_id}\n\n"
-        f"⏳ در حال ساخت اکانت VPN..."
+        f"⏳ در حال ساخت اکانت VPN...",
+        reply_markup=home_button_kb()
     )
+    await call.answer("✅ خرید موفق!")
     username = call.from_user.username or "ندارد"
     await notify_admins(
         bot,
@@ -258,7 +262,6 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
         f"🔑 سفارش: #{purchase_id}"
     )
     await _create_and_send_vpn(bot, user_id, purchase_id, service)
-    await call.answer("✅ خرید موفق!")
 
 
 async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tuple, is_trial: bool = False):
@@ -301,13 +304,15 @@ async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tup
             user_id,
             photo=BufferedInputFile(qr_buf.read(), filename="vpn_qr.png"),
             caption=caption,
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_markup=home_button_kb()
         )
     else:
         await bot.send_message(
             user_id,
             "⚠️ خریدت ثبت شد ولی ساخت اکانت VPN با مشکل مواجه شد.\n"
-            "ادمین به زودی اکانتت رو می‌سازه."
+            "ادمین به زودی اکانتت رو می‌سازه.",
+            reply_markup=home_button_kb()
         )
 
 
@@ -338,8 +343,10 @@ async def confirm_buy(call: types.CallbackQuery, bot: Bot):
         f"💰 پرداخت شد:  {price:,} تومان\n"
         f"👛 موجودی:       {new_bal:,} تومان\n{sep}\n"
         f"🔑 شماره سفارش: #{purchase_id}\n\n"
-        f"⏳ در حال ساخت اکانت VPN..."
+        f"⏳ در حال ساخت اکانت VPN...",
+        reply_markup=home_button_kb()
     )
+    await call.answer("✅ خرید موفق!")
     username = call.from_user.username or "ندارد"
     await notify_admins(
         bot,
@@ -350,7 +357,6 @@ async def confirm_buy(call: types.CallbackQuery, bot: Bot):
         f"🔑 سفارش: #{purchase_id}"
     )
     await _create_and_send_vpn(bot, user_id, purchase_id, service)
-    await call.answer("✅ خرید موفق!")
 
 
 async def _handle_purchase_referral_reward(bot: Bot, buyer_id: int, amount_paid: int):
@@ -633,8 +639,10 @@ async def custom_plan_confirm(call: types.CallbackQuery, state: FSMContext, bot:
         f"💰 پرداخت شد: {final_price:,} تومان\n"
         f"👛 موجودی: {new_bal:,} تومان\n{sep}\n"
         f"🔑 سفارش: #{purchase_id}\n\n"
-        f"⏳ در حال ساخت اکانت VPN..."
+        f"⏳ در حال ساخت اکانت VPN...",
+        reply_markup=home_button_kb()
     )
+    await call.answer("✅ خرید موفق!")
 
     username = call.from_user.username or "ندارد"
     await notify_admins(
@@ -655,7 +663,6 @@ async def custom_plan_confirm(call: types.CallbackQuery, state: FSMContext, bot:
             inbound_ids = None
 
     await _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, inbound_ids)
-    await call.answer("✅ خرید موفق!")
 
 
 async def _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, inbound_ids):
@@ -706,11 +713,13 @@ async def _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, 
             user_id,
             photo=BufferedInputFile(qr_buf.read(), filename="vpn_qr.png"),
             caption=caption,
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_markup=home_button_kb()
         )
     else:
         await bot.send_message(
             user_id,
             "⚠️ خریدت ثبت شد ولی ساخت اکانت VPN با مشکل مواجه شد.\n"
-            "ادمین به زودی اکانتت رو می‌سازه."
+            "ادمین به زودی اکانتت رو می‌سازه.",
+            reply_markup=home_button_kb()
         )

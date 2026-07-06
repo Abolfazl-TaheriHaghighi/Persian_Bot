@@ -6,7 +6,7 @@ from config import ADMIN_ID, is_admin
 from db import (
     create_transaction, approve_transaction, reject_transaction, get_balance
 )
-from keyboards import home_button_kb
+from keyboards import home_button_kb, cancel_kb
 from states import DepositStates, RejectReason
 from utils import run_db, notify_admins
 
@@ -16,22 +16,28 @@ router = Router()
 @router.callback_query(F.data == "menu:deposit")
 async def deposit(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(DepositStates.waiting_for_amount)
-    await call.message.edit_text("💰 مبلغ واریزی رو فقط به عدد وارد کن (تومان):")
+    await call.message.edit_text(
+        "💰 مبلغ واریزی رو فقط به عدد وارد کن (تومان):",
+        reply_markup=cancel_kb()
+    )
     await call.answer()
 
 
 @router.message(DepositStates.waiting_for_amount)
 async def handle_amount(message: types.Message, state: FSMContext):
     if not message.text or not message.text.isdigit():
-        await message.answer("❌ لطفاً فقط عدد وارد کن:")
+        await message.answer("❌ لطفاً فقط عدد وارد کن:", reply_markup=cancel_kb())
         return
     amount = int(message.text)
     if amount <= 0:
-        await message.answer("❌ مبلغ باید بیشتر از صفر باشه:")
+        await message.answer("❌ مبلغ باید بیشتر از صفر باشه:", reply_markup=cancel_kb())
         return
     await state.update_data(amount=amount)
     await state.set_state(DepositStates.waiting_for_receipt)
-    await message.answer(f"💰 مبلغ: {amount:,} تومان\n\n📸 حالا تصویر فیش واریزی رو ارسال کن:")
+    await message.answer(
+        f"💰 مبلغ: {amount:,} تومان\n\n📸 حالا تصویر فیش واریزی رو ارسال کن:",
+        reply_markup=cancel_kb()
+    )
 
 
 @router.message(DepositStates.waiting_for_receipt, F.photo)
@@ -68,7 +74,7 @@ async def handle_receipt(message: types.Message, state: FSMContext, bot: Bot):
 
 @router.message(DepositStates.waiting_for_receipt)
 async def handle_receipt_wrong(message: types.Message):
-    await message.answer("❌ لطفاً تصویر فیش رو ارسال کن (نه متن یا فایل دیگه):")
+    await message.answer("❌ لطفاً تصویر فیش رو ارسال کن (نه متن یا فایل دیگه):", reply_markup=cancel_kb())
 
 
 @router.callback_query(F.data.startswith("approve:"))
@@ -81,7 +87,8 @@ async def approve(call: types.CallbackQuery, bot: Bot):
     await run_db(approve_transaction, tx_id, user_id, amount)
     new_bal = await run_db(get_balance, user_id)
     await bot.send_message(user_id,
-        f"✅ شارژ تایید شد\n💰 +{amount:,} تومان اضافه شد\n👛 موجودی: {new_bal:,} تومان")
+        f"✅ شارژ تایید شد\n💰 +{amount:,} تومان اضافه شد\n👛 موجودی: {new_bal:,} تومان",
+        reply_markup=home_button_kb())
     await call.message.edit_caption(call.message.caption + "\n\n✅ تایید شد")
     await call.answer("✅ تایید شد")
 
@@ -112,7 +119,7 @@ async def reject_with_reason(message: types.Message, state: FSMContext, bot: Bot
     user_msg = f"❌ درخواست شارژ شما رد شد\n💰 مبلغ: {data['amount']:,} تومان"
     if reason:
         user_msg += f"\n\n📝 دلیل: {reason}"
-    await bot.send_message(data["user_id"], user_msg)
+    await bot.send_message(data["user_id"], user_msg, reply_markup=home_button_kb())
     try:
         new_cap = data["orig_caption"] + "\n\n❌ رد شد"
         if reason:

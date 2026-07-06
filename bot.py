@@ -3,6 +3,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand, MenuButtonCommands
 
 from config import BOT_TOKEN, ADMIN_ID
 from db import init_db, update_license_checked
@@ -14,6 +15,19 @@ from handlers import user, payments, services, referral, admin, partner, broadca
 from handlers import license_handler
 
 logging.basicConfig(level=logging.INFO)
+
+
+async def setup_bot_menu(bot: Bot):
+    """
+    ثبت منوی دستورات تلگرام (همون آیکون ☰ کنار دکمه‌ی آپلود فایل).
+    برخلاف دکمه‌های شیشه‌ای، این منو هیچ‌وقت با اسکرول چت گم نمی‌شه — همیشه
+    از پایین صفحه در دسترسه، حتی اگه کاربر وسط یه فلوی دیگه گیر کرده باشه.
+    """
+    commands = [
+        BotCommand(command="start", description="🏠 راه‌اندازی مجدد / بازگشت به خانه"),
+    ]
+    await bot.set_my_commands(commands)
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
 async def daily_license_check(bot: Bot):
@@ -69,6 +83,8 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
+
+    await setup_bot_menu(bot)
 
     dp.include_router(user.router)
     dp.include_router(payments.router)

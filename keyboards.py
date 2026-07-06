@@ -33,6 +33,16 @@ def home_button_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def cancel_kb() -> InlineKeyboardMarkup:
+    """
+    دکمه‌ی «انصراف» برای وسط فلوهای چندمرحله‌ای (FSM) مثل شارژ حساب — کاربر
+    هر لحظه که خواست می‌تونه بی‌خیال بشه، بدون نیاز به تایپ دستی /start.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ انصراف و بازگشت به خانه", callback_data="cancel:fsm")]
+    ])
+
+
 def back_kb(cb: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 برگشت", callback_data=cb)]

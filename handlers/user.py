@@ -128,6 +128,16 @@ async def menu_home(call: types.CallbackQuery, state: FSMContext):
     await render_home(call, call.from_user.id)
 
 
+@router.callback_query(F.data == "cancel:fsm")
+async def cancel_fsm(call: types.CallbackQuery, state: FSMContext):
+    """
+    دکمه‌ی انصراف عمومی — برای وسط هر فلوی چندمرحله‌ای (FSM) که کاربر بخواد
+    بی‌خیال بشه (مثلاً وسط شارژ حساب). state رو پاک می‌کنه و برمی‌گرده خانه.
+    """
+    await state.clear()
+    await render_home(call, call.from_user.id)
+
+
 # ================================================================
 # BALANCE
 # ================================================================

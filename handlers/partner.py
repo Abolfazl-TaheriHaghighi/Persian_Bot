@@ -11,7 +11,7 @@ from db import (
     get_partner, add_partner, remove_partner,
     get_all_partners
 )
-from keyboards import get_kb
+from keyboards import home_button_kb
 from states import PartnerRequest, AdminPartnerApprove, AdminPartnerReject
 from utils import normalize_phone, run_db
 
@@ -22,28 +22,32 @@ router = Router()
 # USER: درخواست همکاری
 # ================================================================
 
-@router.message(F.text == "🤝 درخواست همکاری")
-async def partner_request_start(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
+@router.callback_query(F.data == "menu:partner")
+async def partner_request_start(call: types.CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
 
     if await run_db(is_partner, user_id):
-        await message.answer("✅ شما در حال حاضر همکار فعال هستید.")
+        await call.message.edit_text("✅ شما در حال حاضر همکار فعال هستید.", reply_markup=home_button_kb())
+        await call.answer()
         return
 
     if await run_db(has_pending_request, user_id):
-        await message.answer("⏳ درخواست همکاری شما در حال بررسی است.\nمنتظر تایید ادمین باش.")
+        await call.message.edit_text(
+            "⏳ درخواست همکاری شما در حال بررسی است.\nمنتظر تایید ادمین باش.",
+            reply_markup=home_button_kb()
+        )
+        await call.answer()
         return
 
     await state.set_state(PartnerRequest.waiting_phone)
+    await call.message.edit_text("🤝 درخواست همکاری\n\nابتدا شماره موبایلت رو تایید کن:")
     kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📱 اشتراک‌گذاری شماره", request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True
     )
-    await message.answer(
-        "🤝 درخواست همکاری\n\nابتدا شماره موبایلت رو تایید کن:",
-        reply_markup=kb
-    )
+    await call.message.answer("روی دکمه‌ی زیر بزن یا شماره‌ات رو بفرست:", reply_markup=kb)
+    await call.answer()
 
 
 @router.message(PartnerRequest.waiting_phone, F.contact)
@@ -98,7 +102,7 @@ async def partner_description(message: types.Message, state: FSMContext, bot: Bo
     await message.answer(
         "✅ درخواست همکاری شما ثبت شد!\n"
         "⏳ منتظر بررسی و تایید ادمین باش.",
-        reply_markup=get_kb(user_id)
+        reply_markup=home_button_kb()
     )
 
     # فوروارد پیام کاربر به ادمین
@@ -165,14 +169,14 @@ async def partner_approve_confirm(message: types.Message, state: FSMContext, bot
     full_text = base_text + (f"\n\n💬 پیام ادمین:\n{custom_msg}" if custom_msg else "")
 
     try:
-        await bot.send_message(target_user_id, full_text)
+        await bot.send_message(target_user_id, full_text, reply_markup=home_button_kb())
         notif = "✅ پیام به کاربر ارسال شد"
     except Exception:
         notif = "⚠️ کاربر ربات رو بلاک کرده"
 
     await message.answer(
         f"✅ کاربر {target_user_id} به عنوان همکار تایید شد.\n{notif}",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
 
 
@@ -211,12 +215,12 @@ async def partner_reject_confirm(message: types.Message, state: FSMContext, bot:
     await state.clear()
 
     try:
-        await bot.send_message(target_user_id, user_text)
+        await bot.send_message(target_user_id, user_text, reply_markup=home_button_kb())
         notif = "✅ پیام به کاربر ارسال شد"
     except Exception:
         notif = "⚠️ کاربر ربات رو بلاک کرده"
 
     await message.answer(
         f"✅ رد درخواست کاربر {target_user_id} انجام شد.\n{notif}",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )

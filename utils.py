@@ -1,6 +1,7 @@
 import asyncio
 import re
 from aiogram import types
+from aiogram.fsm.context import FSMContext
 from config import ADMIN_IDS
 
 
@@ -139,7 +140,14 @@ async def render_home(target, user_id: int):
     همه‌ی مسیرهای «🏠 بازگشت به خانه» دقیقاً یکسان رفتار کنن (بدون کد تکراری).
     اگه target از نوع CallbackQuery باشه، همون پیام رو ویرایش می‌کنه (edit_text)
     تا چت تمیز بمونه؛ اگه از نوع Message باشه (مثلاً دستور /start)، پیام جدید می‌فرسته.
+
+    نکته‌ی مهم: پیامی که دکمه‌ی «بازگشت به خانه» روش هست همیشه پیام متنی نیست —
+    مثلاً روی عکس QR کد (با caption) هم همین دکمه هست. edit_text() فقط روی
+    پیام‌های متنی خالص کار می‌کنه و روی عکس/کپشن با خطای Telegram شکست می‌خوره.
+    برای همین اینجا edit_text تلاش می‌شه و اگه شکست خورد (مثلاً پیام عکسه یا
+    خیلی قدیمیه)، به‌جاش یک پیام متنی جدید فرستاده می‌شه.
     """
+    from aiogram.exceptions import TelegramBadRequest
     from db import get_balance
     from keyboards import home_menu_kb
 
@@ -153,7 +161,50 @@ async def render_home(target, user_id: int):
     kb = home_menu_kb(user_id)
 
     if isinstance(target, types.CallbackQuery):
-        await target.message.edit_text(text, reply_markup=kb)
+        try:
+            await target.message.edit_text(text, reply_markup=kb)
+        except TelegramBadRequest:
+            # پیام قابل ویرایش به متن نبود (مثلاً عکس با caption) — پیام جدید بفرست
+            await target.message.answer(text, reply_markup=kb)
         await target.answer()
     else:
         await target.answer(text, reply_markup=kb)
+
+
+# ================== EDIT-IN-PLACE FSM PROMPTS (کاهش شلوغی چت ادمین) ==================
+# popup واقعی (call.answer با show_alert) فقط وقتی ممکنه که آخرین حرکت کاربر
+# «تپ روی دکمه» باشه — تلگرام هیچ API پاپ‌آپی برای پیام‌های متنی معمولی نداره.
+# برای فلوهایی که ادمین باید یک مقدار تایپ کنه (نه فقط تپ بزنه)، این دو تابع
+# باعث می‌شن به‌جای فرستادن یک پیام تایید *جدید*، همون پیامِ «مقدار رو وارد کن»
+# با نتیجه ادیت بشه — یعنی هیچ پیام اضافه‌ای به چت اضافه نمی‌شه.
+
+async def start_prompt(call: types.CallbackQuery, state: FSMContext, text: str, reply_markup=None):
+    """
+    پرامپت رو می‌فرسته (پیام جدید، چون callback نمی‌تونه هم‌زمان state بگیره و
+    ادیت بمونه) و chat_id/message_id ش رو برای ادیت بعدی در state ذخیره می‌کنه.
+    """
+    sent = await call.message.answer(text, reply_markup=reply_markup)
+    data = await state.get_data()
+    data["_prompt_chat_id"] = sent.chat.id
+    data["_prompt_msg_id"] = sent.message_id
+    await state.update_data(**data)
+
+
+async def finish_prompt(message: types.Message, state: FSMContext, text: str, reply_markup=None):
+    """
+    به‌جای فرستادن یک پیام تایید جدید، پیام prompt قبلی (که با start_prompt
+    ذخیره شده) رو با نتیجه ادیت می‌کنه. اگه به هر دلیلی ادیت ممکن نبود (مثلاً
+    پیام قبلاً پاک شده)، fallback امن به فرستادن پیام معمولی می‌زنه.
+    """
+    data = await state.get_data()
+    chat_id = data.get("_prompt_chat_id")
+    msg_id = data.get("_prompt_msg_id")
+    if chat_id and msg_id:
+        try:
+            await message.bot.edit_message_text(
+                text, chat_id=chat_id, message_id=msg_id, reply_markup=reply_markup
+            )
+            return
+        except Exception:
+            pass
+    await message.answer(text, reply_markup=reply_markup)

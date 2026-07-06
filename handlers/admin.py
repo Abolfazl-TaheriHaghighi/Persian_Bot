@@ -34,7 +34,7 @@ from states import (
 from pro_guard import (
     require_pro, check_free_category_limit, check_free_service_limit
 )
-from utils import format_data, data_label_short, normalize_phone, run_db, sanitize_naming_prefix, chunk_blocks
+from utils import format_data, data_label_short, normalize_phone, run_db, sanitize_naming_prefix, chunk_blocks, start_prompt, finish_prompt
 
 router = Router()
 
@@ -283,7 +283,7 @@ async def admin_editfield(call: types.CallbackQuery, state: FSMContext):
         "data_limit":  "📶 حجم جدید رو به GB وارد کن (0=نامحدود، مثلاً 30 یا 0.5):",
         "category":    "🗂 آی‌دی دسته جدید رو وارد کن (0=بدون دسته):",
     }
-    await call.message.answer(prompts.get(field, "مقدار جدید رو وارد کن:"))
+    await start_prompt(call, state, prompts.get(field, "مقدار جدید رو وارد کن:"))
     await call.answer()
 
 
@@ -319,7 +319,7 @@ async def admin_save_edit(message: types.Message, state: FSMContext):
 
     await run_db(update_service, sid, field, value)
     await state.clear()
-    await message.answer("✅ سرویس آپدیت شد!", reply_markup=home_button_kb())
+    await finish_prompt(message, state, "✅ سرویس آپدیت شد!", reply_markup=home_button_kb())
 
 
 # ---- افزودن سرویس ----
@@ -1979,7 +1979,8 @@ async def admin_naming_set_prefix_start(call: types.CallbackQuery, state: FSMCon
     if not is_admin(call.from_user.id):
         return
     await state.set_state(AdminClientNaming.waiting_prefix)
-    await call.message.answer(
+    await start_prompt(
+        call, state,
         "🏷 پیشوند برند ایمیل رو وارد کن.\n"
         "⚠️ فقط حروف انگلیسی، عدد، _ و - مجازه (فاصله و حروف فارسی حذف می‌شن)\n"
         "مثال: PersianShield\n\n"
@@ -2000,13 +2001,15 @@ async def admin_naming_set_prefix_save(message: types.Message, state: FSMContext
         return
 
     await run_db(set_client_naming_prefix, sanitized)
-    await state.clear()
 
     cfg = await run_db(get_client_naming_config)
     counter = cfg[1] if cfg else 0
     next_number = counter + 1
 
-    await message.answer(
+    # به‌جای فرستادن یک پیام تایید جدید، همون پیام «پیشوند رو وارد کن» با نتیجه
+    # ادیت می‌شه — چت ادمین با هر تنظیم، پیام جدید اضافه نمی‌کنه
+    await finish_prompt(
+        message, state,
         f"✅ پیشوند تنظیم شد: {sanitized}\n"
         f"👀 نمونه‌ی بعدی که ساخته می‌شه: {sanitized}{next_number}",
         reply_markup=home_button_kb()

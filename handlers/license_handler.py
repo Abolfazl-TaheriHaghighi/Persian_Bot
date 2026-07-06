@@ -8,7 +8,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import ADMIN_ID, BOT_TOKEN, MASTER_KEY, is_admin
 from db import save_license_key, get_license_key
 from license import verify_license, check_license_from_db, warm_cache, clear_cache, generate_license, get_instance_id
-from keyboards import get_kb
+from keyboards import home_button_kb
 from utils import run_db
 
 router = Router()
@@ -108,7 +108,7 @@ async def license_input_save(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer(
             f"❌ لایسنس نامعتبر\n{result['error']}",
-            reply_markup=get_kb(message.from_user.id)
+            reply_markup=home_button_kb()
         )
         return
 
@@ -127,7 +127,7 @@ async def license_input_save(message: types.Message, state: FSMContext):
             f"👑 همه قابلیت‌های پرو فعال شدن."
         )
 
-    await message.answer(text, reply_markup=get_kb(message.from_user.id))
+    await message.answer(text, reply_markup=home_button_kb())
 
 
 # ================================================================
@@ -203,5 +203,5 @@ async def license_create_days(message: types.Message, state: FSMContext):
         f"🔑 لایسنس:\n<code>{safe_license_key}</code>\n{sep}\n"
         f"این لایسنس رو به مشتری بده تا از پنل ادمین وارد کنه.",
         parse_mode="HTML",
-        reply_markup=get_kb(message.from_user.id)
+        reply_markup=home_button_kb()
     )
