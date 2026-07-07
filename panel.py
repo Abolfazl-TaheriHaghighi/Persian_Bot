@@ -5,7 +5,7 @@ import uuid as uuid_lib
 import time
 import json
 from datetime import datetime, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 from db import get_panel_config
 from utils import run_db
@@ -204,7 +204,10 @@ class PanelClient:
         # نکته: طبق داکیومنت رسمی API این پنل، مسیر ترافیک کلاینت زیر Clients است
         # نه Inbounds — مسیر قدیمی /panel/api/inbounds/getClientTraffics/{email}
         # روی این پنل اصلاً وجود نداره و ۴۰۴ (صفحه‌ی HTML) برمی‌گردونه.
-        data = await self._get(f"/panel/api/clients/traffic/{email}")
+        # نکته‌ی امنیتی: email می‌تونه شامل ایموجی/یونیکد باشه (نام‌گذاری اختصاصی
+        # همکاران) — quote() اینو برای قرار گرفتن امن توی مسیر URL انکود می‌کنه.
+        safe_email = quote(email, safe="")
+        data = await self._get(f"/panel/api/clients/traffic/{safe_email}")
         if data and data.get("success"):
             return data.get("obj")
         return None

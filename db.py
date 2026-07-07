@@ -58,6 +58,19 @@ def init_db():
         )
     """)
 
+    # ---- مسدودسازی دسته‌بندی برای کاربر خاص (deny-list) ----
+    # برخلاف category_custom_access (که یک allow-list برای visibility='custom' است)،
+    # این جدول یک دسته‌بندیِ در حالت عادی قابل‌مشاهده (all/partners/users) رو فقط
+    # برای یک یا چند کاربر خاص مخفی می‌کنه، بدون اینکه روی بقیه‌ی کاربرها اثر بگذاره.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS category_blocked_users (
+            id SERIAL PRIMARY KEY,
+            category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL,
+            UNIQUE(category_id, user_id)
+        )
+    """)
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS services (
             id SERIAL PRIMARY KEY,
@@ -260,6 +273,11 @@ def init_db():
     """)
     # برچسب گروهی که کلاینت‌های VPN این همکار روی پنل زیرش قرار می‌گیرن (قسمت "گروه")
     cur.execute("ALTER TABLE partners ADD COLUMN IF NOT EXISTS client_group_label TEXT DEFAULT NULL")
+    # نام‌گذاری اختصاصی ایمیل کلاینت برای این همکار — پیشوند + ایموجی + شمارنده‌ی خودش
+    # (جدا از شمارنده‌ی سراسری client_naming_config)
+    cur.execute("ALTER TABLE partners ADD COLUMN IF NOT EXISTS email_prefix TEXT DEFAULT NULL")
+    cur.execute("ALTER TABLE partners ADD COLUMN IF NOT EXISTS email_emoji TEXT DEFAULT NULL")
+    cur.execute("ALTER TABLE partners ADD COLUMN IF NOT EXISTS email_counter INTEGER NOT NULL DEFAULT 0")
 
     # ---- درخواست‌های همکاری ----
     cur.execute("""
@@ -985,11 +1003,55 @@ def get_categories_for_user(is_partner_user: bool, user_id: int = None):
             if r[0] not in existing_ids:
                 rows.append(r)
 
+    # حذف دسته‌بندی‌هایی که مخصوصاً برای این کاربر مسدود شدن (deny-list) —
+    # این فیلتر مستقل از visibility اجرا می‌شه، یعنی حتی دسته‌های 'all'/'partners'/
+    # 'users' هم اگه توی لیست مسدودی این کاربر باشن، از نتیجه حذف می‌شن.
+    if user_id is not None:
+        cur.execute("SELECT category_id FROM category_blocked_users WHERE user_id=%s", (user_id,))
+        blocked_ids = {r[0] for r in cur.fetchall()}
+        if blocked_ids:
+            rows = [r for r in rows if r[0] not in blocked_ids]
+
     conn.close()
     return rows
 
 
-# ================== BROADCAST ==================
+def block_category_for_user(category_id: int, user_id: int):
+    """مخفی کردن یک دسته‌بندی مشخص فقط برای یک کاربر خاص (بقیه‌ی کاربرها بدون تغییر می‌بینن)"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO category_blocked_users (category_id, user_id)
+        VALUES (%s, %s) ON CONFLICT (category_id, user_id) DO NOTHING
+    """, (category_id, user_id))
+    conn.commit()
+    conn.close()
+
+
+def unblock_category_for_user(category_id: int, user_id: int):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM category_blocked_users WHERE category_id=%s AND user_id=%s",
+        (category_id, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_category_blocked_users(category_id: int):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT b.user_id, u.phone
+        FROM category_blocked_users b
+        LEFT JOIN users u ON u.telegram_id = b.user_id
+        WHERE b.category_id=%s
+        ORDER BY b.id
+    """, (category_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 def get_all_user_ids():
     conn = connect()
@@ -1167,12 +1229,36 @@ def get_partner(user_id):
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, user_id, phone, description, status, added_at, client_group_label
+        SELECT id, user_id, phone, description, status, added_at, client_group_label,
+               email_prefix, email_emoji, email_counter
         FROM partners WHERE user_id=%s
     """, (user_id,))
     r = cur.fetchone()
     conn.close()
     return r
+
+
+def set_partner_email_naming(user_id: int, emoji: str | None, prefix: str | None):
+    """
+    تنظیم یا پاک کردن (با prefix=None) نام‌گذاری اختصاصی ایمیل این همکار.
+    شمارنده دست نمی‌خوره — فقط با reset_partner_email_counter صفر می‌شه.
+    """
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE partners SET email_emoji=%s, email_prefix=%s WHERE user_id=%s",
+        (emoji, prefix, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def reset_partner_email_counter(user_id: int):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE partners SET email_counter=0 WHERE user_id=%s", (user_id,))
+    conn.commit()
+    conn.close()
 
 
 def set_partner_group_label(user_id: int, label: str | None):
@@ -1401,16 +1487,36 @@ def reset_client_naming_counter():
     conn.close()
 
 
-def get_next_client_email() -> str:
+def get_next_client_email(user_id: int | None = None) -> str:
     """
-    اتمیک: شمارنده رو یکی افزایش می‌ده و ایمیل کامل کلاینت (prefix + عدد) رو برمی‌گردونه.
-    اگه ادمین هنوز پیشوندی تنظیم نکرده باشه، به فرمت قدیمی (client + timestamp) fallback می‌کنه
-    تا هیچ‌وقت ایمیل خالی/نامعتبر ساخته نشه.
-    یک UPDATE اتمیک (بدون فاصله‌ی زمانی بین خوندن prefix و افزایش counter) از race condition
-    زیر بار همزمان (چند خرید هم‌زمان) جلوگیری می‌کنه.
+    اتمیک: شمارنده رو یکی افزایش می‌ده و ایمیل کامل کلاینت رو برمی‌گردونه.
+    ترتیب اولویت:
+      ۱. اگه user_id مربوط به یک همکار فعال با پیشوند ایمیل اختصاصی خودش باشه،
+         از شمارنده‌ی مخصوص همون همکار استفاده می‌شه (partners.email_counter).
+      ۲. وگرنه از شمارنده‌ی سراسری (client_naming_config) استفاده می‌شه.
+      ۳. اگه هیچ‌کدوم تنظیم نشده باشن، به فرمت قدیمی (client + timestamp) fallback
+         می‌کنه تا هیچ‌وقت ایمیل خالی/نامعتبر ساخته نشه.
+    هر دو حالت با یک UPDATE اتمیک (بدون فاصله‌ی زمانی بین خوندن و افزایش شمارنده)
+    از race condition زیر بار همزمان (چند خرید هم‌زمان) جلوگیری می‌کنن.
     """
     conn = connect()
     cur = conn.cursor()
+
+    if user_id is not None:
+        cur.execute("""
+            UPDATE partners
+            SET email_counter = email_counter + 1
+            WHERE user_id=%s AND status='active'
+              AND email_prefix IS NOT NULL AND email_prefix != ''
+            RETURNING email_emoji, email_prefix, email_counter
+        """, (user_id,))
+        r_partner = cur.fetchone()
+        if r_partner:
+            conn.commit()
+            conn.close()
+            emoji, prefix, counter = r_partner
+            return f"{emoji or ''}{prefix}{counter}"
+
     cur.execute("""
         UPDATE client_naming_config
         SET counter = counter + 1

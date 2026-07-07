@@ -145,3 +145,14 @@ class AdminBackupConfig(StatesGroup):
     waiting_bot_token = State()
     waiting_admin_id = State()
     waiting_interval = State()
+
+
+# ---- نام‌گذاری اختصاصی ایمیل هر همکار (پیشوند + ایموجی + شمارنده‌ی خودش) ----
+class AdminPartnerEmailNaming(StatesGroup):
+    waiting_emoji = State()
+    waiting_prefix = State()
+
+
+# ---- مسدودسازی یک دسته‌بندی برای کاربر خاص (deny-list) ----
+class AdminCategoryBlockAdd(StatesGroup):
+    waiting_input = State()

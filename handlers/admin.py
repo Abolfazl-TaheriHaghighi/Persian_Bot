@@ -1207,6 +1207,7 @@ def partner_detail_kb(user_id, is_active):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_text, callback_data=f"admin:partner_toggle:{user_id}")],
         [InlineKeyboardButton(text="🏷 تنظیم لیبل گروه", callback_data=f"admin:partner_set_label:{user_id}")],
+        [InlineKeyboardButton(text="📧 نام‌گذاری اختصاصی ایمیل", callback_data=f"admin:partner_email_naming:{user_id}")],
         [InlineKeyboardButton(text="🛍 آمار خرید", callback_data=f"admin:partner_purchases:{user_id}")],
         [InlineKeyboardButton(text="🗑 حذف همکار", callback_data=f"admin:partner_delete:{user_id}")],
         [InlineKeyboardButton(text="🔙 برگشت به لیست", callback_data="admin:partners")],
@@ -1237,16 +1238,21 @@ async def admin_partner_detail(call: types.CallbackQuery):
     if not p:
         await call.answer("❌ یافت نشد", show_alert=True)
         return
-    pid, uid, phone, desc, status, added_at, group_label = p
+    pid, uid, phone, desc, status, added_at, group_label, email_prefix, email_emoji, email_counter = p
     bal = await run_db(get_balance, uid)
     purchases = await run_db(get_user_purchases, uid)
     sep = "─" * 22
+    if email_prefix:
+        email_naming_text = f"{email_emoji or ''}{email_prefix}{email_counter + 1} (نمونه‌ی بعدی)"
+    else:
+        email_naming_text = "(پیش‌فرض سراسری)"
     text = (
         f"🤝 جزئیات همکار\n{sep}\n"
         f"🆔 User ID: {uid}\n"
         f"📱 شماره: {phone or '—'}\n"
         f"📝 توضیحات: {desc or '—'}\n"
         f"🏷 برچسب گروه پنل: {group_label or '(پیش‌فرض)'}\n"
+        f"📧 نام‌گذاری ایمیل: {email_naming_text}\n"
         f"🔘 وضعیت: {'✅ فعال' if status == 'active' else '❌ غیرفعال'}\n"
         f"💰 موجودی: {bal:,} تومان\n"
         f"🛍 تعداد خرید: {len(purchases)}\n"
@@ -1283,6 +1289,166 @@ async def admin_partner_set_label_save(message: types.Message, state: FSMContext
         f"✅ برچسب گروه ذخیره شد: {label or '(پیش‌فرض)'}",
         reply_markup=home_button_kb()
     )
+
+
+# ---- نام‌گذاری اختصاصی ایمیل هر همکار (پیشوند + ایموجی + شمارنده‌ی خودش) ----
+from db import set_partner_email_naming, reset_partner_email_counter
+from states import AdminPartnerEmailNaming
+
+
+@router.callback_query(F.data.startswith("admin:partner_email_naming:"))
+async def admin_partner_email_naming_menu(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    user_id = int(call.data.split(":")[2])
+    p = await run_db(get_partner, user_id)
+    if not p:
+        await call.answer("❌ یافت نشد", show_alert=True)
+        return
+    _, uid, _, _, _, _, _, email_prefix, email_emoji, email_counter = p
+    sep = "─" * 22
+    if email_prefix:
+        next_email = f"{email_emoji or ''}{email_prefix}{email_counter + 1}"
+        status_text = (
+            f"📧 نام‌گذاری فعلی: {email_emoji or ''}{email_prefix}\n"
+            f"🔢 شمارنده: {email_counter}\n"
+            f"👀 نمونه‌ی ایمیل بعدی: {next_email}\n"
+        )
+    else:
+        status_text = "⚠️ این همکار هنوز نام‌گذاری اختصاصی ندارد؛ از پیشوند سراسری استفاده می‌شود.\n"
+
+    text = (
+        f"📧 نام‌گذاری اختصاصی ایمیل همکار {uid}\n{sep}\n"
+        f"{status_text}{sep}\n"
+        f"هر بار این همکار خرید/تست فعال کند، ایمیل کلاینتش با همین پیشوند و "
+        f"شمارنده‌ی مخصوص خودش ساخته می‌شود (مستقل از شمارنده‌ی سراسری)."
+    )
+    buttons = [
+        [InlineKeyboardButton(text="✏️ تنظیم/تغییر نام‌گذاری", callback_data=f"admin:partner_email_set:{uid}")],
+    ]
+    if email_prefix:
+        buttons.append([InlineKeyboardButton(text="🔄 ریست شمارنده به صفر", callback_data=f"admin:partner_email_reset:{uid}")])
+        buttons.append([InlineKeyboardButton(text="🗑 حذف نام‌گذاری اختصاصی", callback_data=f"admin:partner_email_clear:{uid}")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data=f"admin:partner_detail:{uid}")])
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:partner_email_set:"))
+async def admin_partner_email_set_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    user_id = int(call.data.split(":")[2])
+    await state.set_state(AdminPartnerEmailNaming.waiting_emoji)
+    await state.update_data(target_partner_id=user_id)
+    await call.message.answer(
+        "😀 یک ایموجی برای اول ایمیل‌های این همکار وارد کن (اختیاری).\n"
+        "یا /skip اگه نمی‌خوای ایموجی داشته باشه:"
+    )
+    await call.answer()
+
+
+@router.message(AdminPartnerEmailNaming.waiting_emoji)
+async def admin_partner_email_set_emoji(message: types.Message, state: FSMContext):
+    emoji = None if message.text.strip() == "/skip" else message.text.strip()
+    # محدودیت ساده روی طول ایموجی، تا رشته‌ای غیرمنتظره و طولانی وارد نشه
+    if emoji and len(emoji) > 8:
+        await message.answer("❌ خیلی طولانیه، یک ایموجی کوتاه وارد کن یا /skip بزن:")
+        return
+    await state.update_data(email_emoji=emoji)
+    await state.set_state(AdminPartnerEmailNaming.waiting_prefix)
+    await message.answer(
+        "🏷 حالا پیشوند متنی رو وارد کن.\n"
+        "⚠️ فقط حروف انگلیسی، عدد، _ و - مجازه (فاصله و حروف فارسی حذف می‌شن، "
+        "چون این بخش وارد ایمیل کلاینت روی پنل می‌شه).\n"
+        "مثال: Reza"
+    )
+
+
+@router.message(AdminPartnerEmailNaming.waiting_prefix)
+async def admin_partner_email_set_prefix(message: types.Message, state: FSMContext):
+    raw = message.text.strip()
+    sanitized = sanitize_naming_prefix(raw)
+    if not sanitized:
+        await message.answer(
+            "❌ پیشوند نامعتبره.\n"
+            "فقط حروف انگلیسی، عدد، _ و - مجازه (حداکثر ۲۰ کاراکتر). دوباره وارد کن:"
+        )
+        return
+
+    data = await state.get_data()
+    user_id = data["target_partner_id"]
+    emoji = data.get("email_emoji")
+
+    await run_db(set_partner_email_naming, user_id, emoji, sanitized)
+    await state.clear()
+
+    p = await run_db(get_partner, user_id)
+    _, _, _, _, _, _, _, _, _, email_counter = p
+    next_email = f"{emoji or ''}{sanitized}{email_counter + 1}"
+
+    await message.answer(
+        f"✅ نام‌گذاری اختصاصی ایمیل تنظیم شد.\n"
+        f"👀 نمونه‌ی ایمیل بعدی این همکار: {next_email}",
+        reply_markup=home_button_kb()
+    )
+
+
+@router.callback_query(F.data.startswith("admin:partner_email_reset:"))
+async def admin_partner_email_reset(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    user_id = int(call.data.split(":")[2])
+    await run_db(reset_partner_email_counter, user_id)
+    await call.answer("✅ شمارنده صفر شد", show_alert=True)
+    # بازگشت به منوی نام‌گذاری با وضعیت به‌روزشده
+    p = await run_db(get_partner, user_id)
+    _, uid, _, _, _, _, _, email_prefix, email_emoji, email_counter = p
+    sep = "─" * 22
+    next_email = f"{email_emoji or ''}{email_prefix}{email_counter + 1}"
+    text = (
+        f"📧 نام‌گذاری اختصاصی ایمیل همکار {uid}\n{sep}\n"
+        f"📧 نام‌گذاری فعلی: {email_emoji or ''}{email_prefix}\n"
+        f"🔢 شمارنده: {email_counter}\n"
+        f"👀 نمونه‌ی ایمیل بعدی: {next_email}\n{sep}\n"
+        f"⚠️ اگه کلاینت‌های قبلی این همکار با اعداد کوچیک‌تر هنوز فعالن، نام‌های تکراری ساخته می‌شن."
+    )
+    buttons = [
+        [InlineKeyboardButton(text="✏️ تنظیم/تغییر نام‌گذاری", callback_data=f"admin:partner_email_set:{uid}")],
+        [InlineKeyboardButton(text="🔄 ریست شمارنده به صفر", callback_data=f"admin:partner_email_reset:{uid}")],
+        [InlineKeyboardButton(text="🗑 حذف نام‌گذاری اختصاصی", callback_data=f"admin:partner_email_clear:{uid}")],
+        [InlineKeyboardButton(text="🔙 برگشت", callback_data=f"admin:partner_detail:{uid}")],
+    ]
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("admin:partner_email_clear:"))
+async def admin_partner_email_clear(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    user_id = int(call.data.split(":")[2])
+    await run_db(set_partner_email_naming, user_id, None, None)
+    await call.answer("✅ نام‌گذاری اختصاصی حذف شد؛ از این پس پیشوند سراسری استفاده می‌شه", show_alert=True)
+    p = await run_db(get_partner, user_id)
+    if not p:
+        return
+    pid, uid, phone, desc, status, added_at, group_label, email_prefix, email_emoji, email_counter = p
+    bal = await run_db(get_balance, uid)
+    purchases = await run_db(get_user_purchases, uid)
+    sep = "─" * 22
+    text = (
+        f"🤝 جزئیات همکار\n{sep}\n"
+        f"🆔 User ID: {uid}\n"
+        f"📱 شماره: {phone or '—'}\n"
+        f"📝 توضیحات: {desc or '—'}\n"
+        f"🏷 برچسب گروه پنل: {group_label or '(پیش‌فرض)'}\n"
+        f"📧 نام‌گذاری ایمیل: (پیش‌فرض سراسری)\n"
+        f"🔘 وضعیت: {'✅ فعال' if status == 'active' else '❌ غیرفعال'}\n"
+        f"💰 موجودی: {bal:,} تومان\n"
+        f"🛍 تعداد خرید: {len(purchases)}\n"
+        f"📅 تاریخ عضویت: {added_at.strftime('%Y-%m-%d')}\n"
+    )
+    await call.message.edit_text(text, reply_markup=partner_detail_kb(uid, status == "active"))
 
 
 @router.callback_query(F.data.startswith("admin:partner_purchases:"))
@@ -1359,7 +1525,7 @@ async def admin_partner_toggle(call: types.CallbackQuery):
         await run_db(add_partner, user_id, p[2], p[3])
         await call.answer("✅ فعال شد", show_alert=True)
     p = await run_db(get_partner, user_id)
-    pid, uid, phone, desc, status, added_at, group_label = p
+    pid, uid, phone, desc, status, added_at, group_label, email_prefix, email_emoji, email_counter = p
     sep = "─" * 22
     text = (
         f"🤝 جزئیات همکار\n{sep}\n"
@@ -1454,6 +1620,13 @@ def category_visibility_kb(categories):
                     callback_data=f"admin:cat_custom_users:{cid}"
                 )
             ])
+        # مسدودسازی مستقل از حالت visibility است — روی هر دسته (حتی 'all') قابل استفاده‌ست
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"   └ 🚫 مسدودسازی برای کاربر خاص «{name}»",
+                callback_data=f"admin:cat_block_users:{cid}"
+            )
+        ])
     buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -1542,6 +1715,21 @@ def custom_access_kb(cat_id, users):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def category_block_kb(cat_id, users):
+    """کیبورد لیست کاربرانی که این دسته‌بندی خاص برایشان مسدود شده (deny-list)"""
+    buttons = []
+    for uid, phone in users:
+        label = f"🚫 {uid}"
+        if phone:
+            label += f" | 📱 {phone}"
+        buttons.append([
+            InlineKeyboardButton(text=label, callback_data=f"admin:cat_block_del:{cat_id}:{uid}")
+        ])
+    buttons.append([InlineKeyboardButton(text="➕ مسدود کردن کاربر جدید", callback_data=f"admin:cat_block_add:{cat_id}")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:cat_visibility")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 @router.callback_query(F.data.startswith("admin:cat_custom_users:"))
 async def admin_cat_custom_users(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
@@ -1624,6 +1812,98 @@ async def admin_cat_custom_del(call: types.CallbackQuery):
     if not users:
         text += "هیچ کاربری اضافه نشده."
     await call.message.edit_text(text, reply_markup=custom_access_kb(cat_id, users))
+
+
+# ---- مسدودسازی دسته‌بندی برای کاربر خاص (deny-list) ----
+from db import block_category_for_user, unblock_category_for_user, get_category_blocked_users
+from states import AdminCategoryBlockAdd
+
+
+@router.callback_query(F.data.startswith("admin:cat_block_users:"))
+async def admin_cat_block_users(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cat_id = int(call.data.split(":")[2])
+    users = await run_db(get_category_blocked_users, cat_id)
+    text = f"🚫 لیست کاربرانی که این دسته برایشان مسدود شده (دسته #{cat_id}):\n\n"
+    if not users:
+        text += (
+            "هیچ کاربری مسدود نشده — یعنی همه‌ی کاربرانی که طبق حالت visibility اجازه‌ی "
+            "دیدن این دسته رو دارن، می‌بیننش.\n"
+            "روی «مسدود کردن کاربر جدید» بزن تا این دسته رو فقط از یک کاربر خاص مخفی کنی."
+        )
+    await call.message.edit_text(text, reply_markup=category_block_kb(cat_id, users))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:cat_block_add:"))
+async def admin_cat_block_add_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    cat_id = int(call.data.split(":")[2])
+    await state.set_state(AdminCategoryBlockAdd.waiting_input)
+    await state.update_data(cat_id=cat_id)
+    await call.message.answer(
+        "🚫 آیدی عددی یا شماره موبایل کاربر(ها) که می‌خوای این دسته رو ازشون مخفی کنی وارد کن:\n\n"
+        "می‌تونی چند مورد رو هر خط یکی بفرستی.\n"
+        "مثال:\n"
+        "933988915\n"
+        "09123456789\n\n"
+        "⚠️ نکته: بقیه‌ی کاربرها بدون تغییر همچنان این دسته رو می‌بینن؛ فقط کاربر(های) "
+        "مشخص‌شده اینجا دیگه این دسته رو توی فروشگاه نمی‌بینن."
+    )
+    await call.answer()
+
+
+@router.message(AdminCategoryBlockAdd.waiting_input)
+async def admin_cat_block_add_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    cat_id = data["cat_id"]
+    lines = [l.strip() for l in message.text.strip().splitlines() if l.strip()]
+
+    blocked = []
+    not_found = []
+
+    for line in lines:
+        if line.isdigit() and len(line) >= 6 and not line.startswith("09"):
+            uid = int(line)
+            await run_db(block_category_for_user, cat_id, uid)
+            blocked.append(str(uid))
+        elif line.startswith("09") and len(line) == 11:
+            uid = await run_db(find_user_id_by_phone, line)
+            if uid:
+                await run_db(block_category_for_user, cat_id, uid)
+                blocked.append(f"{line} → {uid}")
+            else:
+                not_found.append(line)
+        else:
+            not_found.append(line)
+
+    await state.clear()
+
+    text = ""
+    if blocked:
+        text += "🚫 مسدود شدن برای:\n" + "\n".join(blocked) + "\n\n"
+    if not_found:
+        text += "❌ پیدا نشدن یا فرمت اشتباه:\n" + "\n".join(not_found)
+
+    await message.answer(text or "هیچی پردازش نشد.", reply_markup=home_button_kb())
+
+
+@router.callback_query(F.data.startswith("admin:cat_block_del:"))
+async def admin_cat_block_del(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    parts = call.data.split(":")
+    cat_id = int(parts[2])
+    user_id = int(parts[3])
+    await run_db(unblock_category_for_user, cat_id, user_id)
+    await call.answer("✅ رفع مسدودیت شد", show_alert=True)
+    users = await run_db(get_category_blocked_users, cat_id)
+    text = f"🚫 لیست کاربرانی که این دسته برایشان مسدود شده (دسته #{cat_id}):\n\n"
+    if not users:
+        text += "هیچ کاربری مسدود نشده."
+    await call.message.edit_text(text, reply_markup=category_block_kb(cat_id, users))
 
 
 # ================================================================

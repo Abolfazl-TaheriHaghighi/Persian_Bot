@@ -68,29 +68,29 @@ def sanitize_naming_prefix(raw: str) -> str:
     return cleaned
 
 
-async def generate_client_email() -> str:
+async def generate_client_email(user_id: int | None = None) -> str:
     """
     ساخت ایمیل یکتای کلاینت برای پنل VPN.
-    اگه ادمین از پنل ادمین یک پیشوند تنظیم کرده باشه (مثلاً PersianShield)،
-    خروجی به شکل PersianShield1, PersianShield2, ... خواهد بود.
-    در غیر این صورت به فرمت قدیمی (بر پایه timestamp) fallback می‌کنه.
+    ترتیب اولویت: پیشوند اختصاصی همکار (اگه user_id مربوط به همکاری با نام‌گذاری
+    خودش باشه) > پیشوند سراسری (تنظیم‌شده توسط ادمین) > فرمت قدیمی (timestamp).
     این تابع تنها نقطه‌ی ساخت email است — همه‌ی مسیرهای ساخت اکانت (خرید عادی،
-    تست رایگان، پلن دلخواه) باید از همین استفاده کنن تا شمارنده یکپارچه بمونه.
+    تست رایگان، پلن دلخواه) باید از همین استفاده کنن تا شمارنده‌ها یکپارچه بمونن.
     """
     from db import get_next_client_email
-    return await run_db(get_next_client_email)
+    return await run_db(get_next_client_email, user_id)
 
 
 async def prepare_new_client(user_id: int) -> tuple[str, str]:
     """
     یک‌جا هرچی برای ساخت کلاینت جدید لازمه رو آماده می‌کنه: (email, group).
+    email بر اساس نام‌گذاری اختصاصی همکار (اگه تنظیم شده باشه) یا سراسری ساخته می‌شه.
     group بر اساس نوع کاربر تعیین می‌شه:
       - ادمین → "Admin"
       - همکار با برچسب اختصاصی → همون برچسب
       - بقیه → گروه پیش‌فرض تنظیم‌شده توسط ادمین (یا رشته‌ی خالی اگه هنوز تنظیم نشده)
     """
     from db import get_client_group_for_user
-    email = await generate_client_email()
+    email = await generate_client_email(user_id)
     group = await run_db(get_client_group_for_user, user_id)
     return email, group
 
