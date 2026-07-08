@@ -35,6 +35,34 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    # روش پرداختی که کاربر برای این تراکنش انتخاب کرده (برای اطلاع ادمین)
+    cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS payment_method_id INTEGER")
+
+    # ---- روش‌های پرداخت شارژ حساب (قابل افزودن/ویرایش/حذف توسط ادمین) ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS payment_methods (
+            id SERIAL PRIMARY KEY
+        )
+    """)
+    # نکته: چون CREATE TABLE IF NOT EXISTS اگه جدولی با این اسم از قبل (با ساختار
+    # متفاوت/ناقص) وجود داشته باشه هیچ ستونی اضافه نمی‌کنه، همه‌ی ستون‌ها رو صریحاً
+    # با ALTER تضمین می‌کنیم — دقیقاً همون الگویی که برای بقیه‌ی جدول‌های این پروژه هم رعایت شده
+    cur.execute("ALTER TABLE payment_methods ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''")
+    cur.execute("ALTER TABLE payment_methods ADD COLUMN IF NOT EXISTS instructions TEXT DEFAULT ''")
+    cur.execute("ALTER TABLE payment_methods ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
+    cur.execute("ALTER TABLE payment_methods ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0")
+
+    # ---- کارت‌های بانکی هر روش پرداخت (یک روش می‌تونه چند کارت داشته باشه) ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS payment_method_cards (
+            id SERIAL PRIMARY KEY
+        )
+    """)
+    cur.execute("ALTER TABLE payment_method_cards ADD COLUMN IF NOT EXISTS method_id INTEGER REFERENCES payment_methods(id) ON DELETE CASCADE")
+    cur.execute("ALTER TABLE payment_method_cards ADD COLUMN IF NOT EXISTS card_number TEXT NOT NULL DEFAULT ''")
+    cur.execute("ALTER TABLE payment_method_cards ADD COLUMN IF NOT EXISTS holder_name TEXT NOT NULL DEFAULT ''")
+    cur.execute("ALTER TABLE payment_method_cards ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
+    cur.execute("ALTER TABLE payment_method_cards ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS categories (
@@ -437,13 +465,13 @@ def get_referrals(user_id):
 
 # ================== TRANSACTIONS ==================
 
-def create_transaction(user_id, amount):
+def create_transaction(user_id, amount, payment_method_id=None):
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO transactions (user_id, amount, status)
-        VALUES (%s, %s, 'pending') RETURNING id
-    """, (user_id, amount))
+        INSERT INTO transactions (user_id, amount, status, payment_method_id)
+        VALUES (%s, %s, 'pending', %s) RETURNING id
+    """, (user_id, amount, payment_method_id))
     tx_id = cur.fetchone()[0]
     conn.commit()
     conn.close()
@@ -493,6 +521,162 @@ def get_pending_transactions():
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+# ================== PAYMENT METHODS (شارژ حساب) ==================
+
+def get_active_payment_methods():
+    """برای نمایش به کاربر — فقط روش‌های فعال"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, title FROM payment_methods WHERE is_active=TRUE ORDER BY sort_order, id")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_payment_methods():
+    """برای مدیریت توسط ادمین — همه، فعال و غیرفعال"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, title, is_active, sort_order FROM payment_methods ORDER BY sort_order, id")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_payment_method(method_id):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, title, instructions, is_active FROM payment_methods WHERE id=%s", (method_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+
+def add_payment_method(title: str, instructions: str = ""):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO payment_methods (title, instructions) VALUES (%s, %s) RETURNING id",
+        (title, instructions)
+    )
+    mid = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return mid
+
+
+def update_payment_method(method_id: int, field: str, value):
+    allowed = {"title": "title", "instructions": "instructions"}
+    col = allowed.get(field)
+    if not col:
+        return
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE payment_methods SET {col}=%s WHERE id=%s", (value, method_id))
+    conn.commit()
+    conn.close()
+
+
+def toggle_payment_method(method_id: int):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE payment_methods SET is_active = NOT is_active WHERE id=%s RETURNING is_active",
+        (method_id,)
+    )
+    r = cur.fetchone()
+    conn.commit()
+    conn.close()
+    return r[0] if r else None
+
+
+def delete_payment_method(method_id: int):
+    """حذف کامل — کارت‌های زیرمجموعه هم به‌خاطر ON DELETE CASCADE خودکار حذف می‌شن"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM payment_methods WHERE id=%s", (method_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_method_cards(method_id: int, active_only: bool = True):
+    conn = connect()
+    cur = conn.cursor()
+    if active_only:
+        cur.execute("""
+            SELECT id, card_number, holder_name, is_active
+            FROM payment_method_cards WHERE method_id=%s AND is_active=TRUE
+            ORDER BY sort_order, id
+        """, (method_id,))
+    else:
+        cur.execute("""
+            SELECT id, card_number, holder_name, is_active
+            FROM payment_method_cards WHERE method_id=%s
+            ORDER BY sort_order, id
+        """, (method_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_card(card_id: int):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, method_id, card_number, holder_name, is_active FROM payment_method_cards WHERE id=%s",
+        (card_id,)
+    )
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+
+def add_payment_card(method_id: int, card_number: str, holder_name: str):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO payment_method_cards (method_id, card_number, holder_name) VALUES (%s, %s, %s) RETURNING id",
+        (method_id, card_number, holder_name)
+    )
+    cid = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return cid
+
+
+def update_payment_card(card_id: int, field: str, value):
+    allowed = {"card_number": "card_number", "holder_name": "holder_name"}
+    col = allowed.get(field)
+    if not col:
+        return
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE payment_method_cards SET {col}=%s WHERE id=%s", (value, card_id))
+    conn.commit()
+    conn.close()
+
+
+def toggle_payment_card(card_id: int):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE payment_method_cards SET is_active = NOT is_active WHERE id=%s RETURNING is_active",
+        (card_id,)
+    )
+    r = cur.fetchone()
+    conn.commit()
+    conn.close()
+    return r[0] if r else None
+
+
+def delete_payment_card(card_id: int):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM payment_method_cards WHERE id=%s", (card_id,))
+    conn.commit()
+    conn.close()
 
 
 # ================== CATEGORIES ==================

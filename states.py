@@ -156,3 +156,22 @@ class AdminPartnerEmailNaming(StatesGroup):
 # ---- مسدودسازی یک دسته‌بندی برای کاربر خاص (deny-list) ----
 class AdminCategoryBlockAdd(StatesGroup):
     waiting_input = State()
+
+
+# ---- مدیریت روش‌های پرداخت شارژ حساب ----
+class AdminPaymentMethod(StatesGroup):
+    waiting_title = State()
+    waiting_instructions = State()
+
+
+class AdminEditPaymentMethod(StatesGroup):
+    entering_value = State()
+
+
+class AdminPaymentCard(StatesGroup):
+    waiting_card_number = State()
+    waiting_holder_name = State()
+
+
+class AdminEditPaymentCard(StatesGroup):
+    entering_value = State()

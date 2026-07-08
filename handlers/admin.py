@@ -2490,3 +2490,347 @@ async def admin_backup_set_interval_save(message: types.Message, state: FSMConte
         text = f"✅ بکاپ خودکار فعال شد: هر {hours} ساعت یک‌بار."
 
     await message.answer(text, reply_markup=home_button_kb())
+
+
+# ================================================================
+# PAYMENT METHODS (روش‌های پرداخت شارژ حساب)
+# ================================================================
+
+from db import (
+    get_all_payment_methods, get_payment_method, add_payment_method,
+    update_payment_method, toggle_payment_method, delete_payment_method,
+    get_method_cards, get_card, add_payment_card, update_payment_card,
+    toggle_payment_card, delete_payment_card,
+)
+from states import AdminPaymentMethod, AdminEditPaymentMethod, AdminPaymentCard, AdminEditPaymentCard
+
+
+def payment_methods_kb(methods):
+    buttons = []
+    for m in methods:
+        mid, title, is_active, sort_order = m
+        st = "✅" if is_active else "❌"
+        buttons.append([InlineKeyboardButton(text=f"{st} {title}", callback_data=f"admin:pm_detail:{mid}")])
+    buttons.append([InlineKeyboardButton(text="➕ افزودن روش جدید", callback_data="admin:pm_add")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def pm_detail_kb(method_id, is_active):
+    toggle_text = "❌ غیرفعال کردن" if is_active else "✅ فعال کردن"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ عنوان", callback_data=f"admin:pm_edit:{method_id}:title")],
+        [InlineKeyboardButton(text="📝 توضیحات/راهنما", callback_data=f"admin:pm_edit:{method_id}:instructions")],
+        [InlineKeyboardButton(text="💳 مدیریت کارت‌ها", callback_data=f"admin:pm_cards:{method_id}")],
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"admin:pm_toggle:{method_id}")],
+        [InlineKeyboardButton(text="🗑 حذف کامل روش", callback_data=f"admin:pm_delete:{method_id}")],
+        [InlineKeyboardButton(text="🔙 برگشت به لیست", callback_data="admin:payment_methods")],
+    ])
+
+
+def pm_cards_kb(method_id, cards):
+    buttons = []
+    for c in cards:
+        cid, card_number, holder_name, is_active = c
+        st = "✅" if is_active else "❌"
+        buttons.append([InlineKeyboardButton(text=f"{st} {holder_name} | {card_number}", callback_data=f"admin:pm_card_detail:{cid}")])
+    buttons.append([InlineKeyboardButton(text="➕ افزودن کارت جدید", callback_data=f"admin:pm_card_add:{method_id}")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data=f"admin:pm_detail:{method_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def pm_card_detail_kb(card_id, method_id, is_active):
+    toggle_text = "❌ غیرفعال کردن" if is_active else "✅ فعال کردن"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ شماره کارت", callback_data=f"admin:pm_card_edit:{card_id}:card_number")],
+        [InlineKeyboardButton(text="✏️ نام صاحب کارت", callback_data=f"admin:pm_card_edit:{card_id}:holder_name")],
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"admin:pm_card_toggle:{card_id}:{method_id}")],
+        [InlineKeyboardButton(text="🗑 حذف کارت", callback_data=f"admin:pm_card_delete:{card_id}:{method_id}")],
+        [InlineKeyboardButton(text="🔙 برگشت به لیست کارت‌ها", callback_data=f"admin:pm_cards:{method_id}")],
+    ])
+
+
+@router.callback_query(F.data == "admin:payment_methods")
+async def admin_payment_methods(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    methods = await run_db(get_all_payment_methods)
+    text = "💳 روش‌های پرداخت شارژ حساب:\n✅=فعال | ❌=غیرفعال\n\n"
+    if not methods:
+        text += "هنوز هیچ روشی تعریف نشده."
+    await call.message.edit_text(text, reply_markup=payment_methods_kb(methods))
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:pm_add")
+async def admin_pm_add_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminPaymentMethod.waiting_title)
+    await call.message.answer("💳 عنوان روش پرداخت رو وارد کن:\n(مثلاً: کارت به کارت)")
+    await call.answer()
+
+
+@router.message(AdminPaymentMethod.waiting_title)
+async def admin_pm_add_title(message: types.Message, state: FSMContext):
+    await state.update_data(title=message.text.strip())
+    await state.set_state(AdminPaymentMethod.waiting_instructions)
+    await message.answer(
+        "📝 یک توضیح/راهنمای کوتاه برای این روش بنویس (نمایش داده می‌شه به کاربر قبل از کارت‌ها)\n"
+        "یا /skip برای بدون توضیح:"
+    )
+
+
+@router.message(AdminPaymentMethod.waiting_instructions)
+async def admin_pm_add_instructions(message: types.Message, state: FSMContext):
+    instructions = "" if message.text.strip() == "/skip" else message.text.strip()
+    data = await state.get_data()
+    mid = await run_db(add_payment_method, data["title"], instructions)
+    await state.clear()
+    await message.answer(
+        f"✅ روش پرداخت اضافه شد!\n💳 {data['title']}\n🔑 ID: {mid}\n\n"
+        f"⚠️ یادت نره از «💳 مدیریت کارت‌ها» حداقل یک کارت برای این روش اضافه کنی.",
+        reply_markup=home_button_kb()
+    )
+
+
+@router.callback_query(F.data.startswith("admin:pm_detail:"))
+async def admin_pm_detail(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    method_id = int(call.data.split(":")[2])
+    method = await run_db(get_payment_method, method_id)
+    if not method:
+        await call.answer("❌ پیدا نشد", show_alert=True)
+        return
+    mid, title, instructions, is_active = method
+    cards = await run_db(get_method_cards, method_id, False)
+    sep = "─" * 22
+    text = (
+        f"💳 جزئیات روش پرداخت\n{sep}\n"
+        f"عنوان: {title}\n"
+        f"توضیحات: {instructions or '—'}\n"
+        f"تعداد کارت‌ها: {len(cards)}\n"
+        f"وضعیت: {'✅ فعال' if is_active else '❌ غیرفعال'}\n"
+    )
+    await call.message.edit_text(text, reply_markup=pm_detail_kb(mid, is_active))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:pm_toggle:"))
+async def admin_pm_toggle(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    method_id = int(call.data.split(":")[2])
+    new_status = await run_db(toggle_payment_method, method_id)
+    await call.answer("✅ فعال شد" if new_status else "❌ غیرفعال شد", show_alert=True)
+    method = await run_db(get_payment_method, method_id)
+    if method:
+        mid, title, instructions, is_active = method
+        cards = await run_db(get_method_cards, method_id, False)
+        sep = "─" * 22
+        text = (
+            f"💳 جزئیات روش پرداخت\n{sep}\n"
+            f"عنوان: {title}\nتوضیحات: {instructions or '—'}\n"
+            f"تعداد کارت‌ها: {len(cards)}\nوضعیت: {'✅ فعال' if is_active else '❌ غیرفعال'}\n"
+        )
+        await call.message.edit_text(text, reply_markup=pm_detail_kb(mid, is_active))
+
+
+@router.callback_query(F.data.startswith("admin:pm_delete:"))
+async def admin_pm_delete(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    method_id = int(call.data.split(":")[2])
+    await run_db(delete_payment_method, method_id)
+    await call.answer("🗑 روش پرداخت (و کارت‌هاش) حذف شد", show_alert=True)
+    methods = await run_db(get_all_payment_methods)
+    text = "💳 روش‌های پرداخت شارژ حساب:\n✅=فعال | ❌=غیرفعال\n\n"
+    if not methods:
+        text += "هنوز هیچ روشی تعریف نشده."
+    await call.message.edit_text(text, reply_markup=payment_methods_kb(methods))
+
+
+@router.callback_query(F.data.startswith("admin:pm_edit:"))
+async def admin_pm_edit_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    parts = call.data.split(":")
+    method_id = int(parts[2])
+    field = parts[3]
+    await state.set_state(AdminEditPaymentMethod.entering_value)
+    await state.update_data(method_id=method_id, field=field)
+    prompts = {
+        "title": "✏️ عنوان جدید رو وارد کن:",
+        "instructions": "📝 توضیحات/راهنمای جدید رو وارد کن (یا /skip برای خالی):",
+    }
+    await call.message.answer(prompts.get(field, "مقدار جدید رو وارد کن:"))
+    await call.answer()
+
+
+@router.message(AdminEditPaymentMethod.entering_value)
+async def admin_pm_edit_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    method_id = data["method_id"]
+    field = data["field"]
+    raw = message.text.strip()
+    value = "" if (field == "instructions" and raw == "/skip") else raw
+
+    if field == "title" and not value:
+        await message.answer("❌ عنوان نمی‌تونه خالی باشه:")
+        return
+
+    await run_db(update_payment_method, method_id, field, value)
+    await state.clear()
+    await message.answer("✅ ذخیره شد.", reply_markup=home_button_kb())
+
+
+@router.callback_query(F.data.startswith("admin:pm_cards:"))
+async def admin_pm_cards(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    method_id = int(call.data.split(":")[2])
+    cards = await run_db(get_method_cards, method_id, False)
+    text = f"💳 کارت‌های این روش پرداخت (#{method_id}):\n✅=فعال | ❌=غیرفعال\n\n"
+    if not cards:
+        text += "هنوز هیچ کارتی اضافه نشده."
+    await call.message.edit_text(text, reply_markup=pm_cards_kb(method_id, cards))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:pm_card_add:"))
+async def admin_pm_card_add_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    method_id = int(call.data.split(":")[2])
+    await state.set_state(AdminPaymentCard.waiting_card_number)
+    await state.update_data(method_id=method_id)
+    await call.message.answer("💳 شماره کارت رو وارد کن (فقط عدد، بدون فاصله/خط‌فاصله):")
+    await call.answer()
+
+
+@router.message(AdminPaymentCard.waiting_card_number)
+async def admin_pm_card_add_number(message: types.Message, state: FSMContext):
+    raw = message.text.strip().replace(" ", "").replace("-", "")
+    if not raw.isdigit() or len(raw) not in (16, 19):
+        await message.answer("❌ شماره کارت باید فقط عدد و معمولاً ۱۶ رقمی باشه. دوباره وارد کن:")
+        return
+    await state.update_data(card_number=raw)
+    await state.set_state(AdminPaymentCard.waiting_holder_name)
+    await message.answer("👤 نام صاحب کارت رو وارد کن:")
+
+
+@router.message(AdminPaymentCard.waiting_holder_name)
+async def admin_pm_card_add_holder(message: types.Message, state: FSMContext):
+    holder_name = message.text.strip()
+    if not holder_name:
+        await message.answer("❌ نام نمی‌تونه خالی باشه:")
+        return
+    data = await state.get_data()
+    method_id = data["method_id"]
+    card_number = data["card_number"]
+    cid = await run_db(add_payment_card, method_id, card_number, holder_name)
+    await state.clear()
+    await message.answer(
+        f"✅ کارت اضافه شد!\n👤 {holder_name}\n💳 {card_number}\n🔑 ID: {cid}",
+        reply_markup=home_button_kb()
+    )
+
+
+@router.callback_query(F.data.startswith("admin:pm_card_detail:"))
+async def admin_pm_card_detail(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    card_id = int(call.data.split(":")[2])
+    card = await run_db(get_card, card_id)
+    if not card:
+        await call.answer("❌ پیدا نشد", show_alert=True)
+        return
+    cid, method_id, card_number, holder_name, is_active = card
+    sep = "─" * 22
+    text = (
+        f"💳 جزئیات کارت\n{sep}\n"
+        f"👤 نام: {holder_name}\n"
+        f"💳 شماره: {card_number}\n"
+        f"وضعیت: {'✅ فعال' if is_active else '❌ غیرفعال'}\n"
+    )
+    await call.message.edit_text(text, reply_markup=pm_card_detail_kb(cid, method_id, is_active))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:pm_card_toggle:"))
+async def admin_pm_card_toggle(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    parts = call.data.split(":")
+    card_id = int(parts[2])
+    method_id = int(parts[3])
+    new_status = await run_db(toggle_payment_card, card_id)
+    await call.answer("✅ فعال شد" if new_status else "❌ غیرفعال شد", show_alert=True)
+    card = await run_db(get_card, card_id)
+    if card:
+        cid, mid, card_number, holder_name, is_active = card
+        sep = "─" * 22
+        text = (
+            f"💳 جزئیات کارت\n{sep}\n"
+            f"👤 نام: {holder_name}\n💳 شماره: {card_number}\n"
+            f"وضعیت: {'✅ فعال' if is_active else '❌ غیرفعال'}\n"
+        )
+        await call.message.edit_text(text, reply_markup=pm_card_detail_kb(cid, method_id, is_active))
+
+
+@router.callback_query(F.data.startswith("admin:pm_card_delete:"))
+async def admin_pm_card_delete(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    parts = call.data.split(":")
+    card_id = int(parts[2])
+    method_id = int(parts[3])
+    await run_db(delete_payment_card, card_id)
+    await call.answer("🗑 کارت حذف شد", show_alert=True)
+    cards = await run_db(get_method_cards, method_id, False)
+    text = f"💳 کارت‌های این روش پرداخت (#{method_id}):\n✅=فعال | ❌=غیرفعال\n\n"
+    if not cards:
+        text += "هنوز هیچ کارتی اضافه نشده."
+    await call.message.edit_text(text, reply_markup=pm_cards_kb(method_id, cards))
+
+
+@router.callback_query(F.data.startswith("admin:pm_card_edit:"))
+async def admin_pm_card_edit_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    parts = call.data.split(":")
+    card_id = int(parts[2])
+    field = parts[3]
+    await state.set_state(AdminEditPaymentCard.entering_value)
+    await state.update_data(card_id=card_id, field=field)
+    prompts = {
+        "card_number": "💳 شماره کارت جدید رو وارد کن (فقط عدد):",
+        "holder_name": "👤 نام جدید صاحب کارت رو وارد کن:",
+    }
+    await call.message.answer(prompts.get(field, "مقدار جدید رو وارد کن:"))
+    await call.answer()
+
+
+@router.message(AdminEditPaymentCard.entering_value)
+async def admin_pm_card_edit_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    card_id = data["card_id"]
+    field = data["field"]
+    raw = message.text.strip()
+
+    if field == "card_number":
+        cleaned = raw.replace(" ", "").replace("-", "")
+        if not cleaned.isdigit() or len(cleaned) not in (16, 19):
+            await message.answer("❌ شماره کارت باید فقط عدد و معمولاً ۱۶ رقمی باشه. دوباره وارد کن:")
+            return
+        value = cleaned
+    else:
+        if not raw:
+            await message.answer("❌ نمی‌تونه خالی باشه:")
+            return
+        value = raw
+
+    await run_db(update_payment_card, card_id, field, value)
+    await state.clear()
+    await message.answer("✅ ذخیره شد.", reply_markup=home_button_kb())
