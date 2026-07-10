@@ -1930,3 +1930,30 @@ def update_backup_last_run():
     cur.execute("UPDATE backup_config SET last_backup_at=NOW() WHERE id=1")
     conn.commit()
     conn.close()
+
+
+# ================== BRAND NAME (شخصی‌سازی متن‌های ربات) ==================
+
+def get_brand_name() -> str:
+    """
+    نام برندی که در متن‌های کاربری (خوش‌آمدگویی، سرصفحه‌ی خانه و...) نشون داده می‌شه.
+    اگه ادمین هنوز چیزی تنظیم نکرده باشه، مقدار پیش‌فرض "Persian Bot" برمی‌گرده.
+    از جدول bot_settings (کلید-مقدار عمومی که از قبل توی پروژه بود) استفاده می‌شه.
+    """
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM bot_settings WHERE key='brand_name'")
+    r = cur.fetchone()
+    conn.close()
+    return r[0] if r and r[0] else "Persian Bot"
+
+
+def set_brand_name(name: str):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO bot_settings (key, value) VALUES ('brand_name', %s)
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
+    """, (name,))
+    conn.commit()
+    conn.close()

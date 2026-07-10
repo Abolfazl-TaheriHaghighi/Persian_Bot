@@ -175,3 +175,8 @@ class AdminPaymentCard(StatesGroup):
 
 class AdminEditPaymentCard(StatesGroup):
     entering_value = State()
+
+
+# ---- نام برند ربات (شخصی‌سازی متن‌های کاربری) ----
+class AdminBrandName(StatesGroup):
+    waiting_name = State()

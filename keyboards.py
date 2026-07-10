@@ -71,6 +71,7 @@ def admin_panel_kb():
         [InlineKeyboardButton(text="🏷 نام‌گذاری کلاینت‌ها",     callback_data="admin:naming")],
         [InlineKeyboardButton(text="💾 پشتیبان‌گیری از دیتابیس", callback_data="admin:backup")],
         [InlineKeyboardButton(text="💳 مدیریت روش‌های پرداخت",   callback_data="admin:payment_methods")],
+        [InlineKeyboardButton(text="🎨 نام برند ربات",            callback_data="admin:brand")],
         [InlineKeyboardButton(text="🔑 لایسنس",                  callback_data="admin:license")],
         [InlineKeyboardButton(text="🏠 بازگشت به خانه",           callback_data="menu:home")],
     ])

@@ -2834,3 +2834,63 @@ async def admin_pm_card_edit_save(message: types.Message, state: FSMContext):
     await run_db(update_payment_card, card_id, field, value)
     await state.clear()
     await message.answer("✅ ذخیره شد.", reply_markup=home_button_kb())
+
+
+# ================================================================
+# BRAND NAME (نام برند ربات — شخصی‌سازی متن‌های کاربری)
+# ================================================================
+
+from db import get_brand_name, set_brand_name
+from states import AdminBrandName
+
+
+@router.callback_query(F.data == "admin:brand")
+async def admin_brand_menu(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    brand_name = await run_db(get_brand_name)
+    sep = "─" * 22
+    text = (
+        f"🎨 نام برند ربات\n{sep}\n"
+        f"این نام داخل پیام خوش‌آمدگویی و سرصفحه‌ی «خانه» به کاربرها نشون داده می‌شه.\n{sep}\n"
+        f"📛 نام فعلی: {brand_name}\n"
+    )
+    buttons = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ تغییر نام برند", callback_data="admin:brand_set")],
+        [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
+    ])
+    await call.message.edit_text(text, reply_markup=buttons)
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:brand_set")
+async def admin_brand_set_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminBrandName.waiting_name)
+    await start_prompt(
+        call, state,
+        "🎨 نام جدید برند رو وارد کن:\n"
+        "(همینی که می‌نویسی دقیقاً همون شکلی به کاربرها نشون داده می‌شه، مثلاً: پرشین شیلد)"
+    )
+    await call.answer()
+
+
+@router.message(AdminBrandName.waiting_name)
+async def admin_brand_set_save(message: types.Message, state: FSMContext):
+    name = message.text.strip()
+    if not name:
+        await message.answer("❌ نمی‌تونه خالی باشه. دوباره وارد کن:")
+        return
+    if len(name) > 40:
+        await message.answer("❌ خیلی طولانیه (حداکثر ۴۰ کاراکتر). دوباره وارد کن:")
+        return
+
+    await run_db(set_brand_name, name)
+
+    await finish_prompt(
+        message, state,
+        f"✅ نام برند تنظیم شد: {name}\n"
+        f"از این پس در پیام خوش‌آمدگویی و سرصفحه‌ی خانه نشون داده می‌شه.",
+        reply_markup=home_button_kb()
+    )

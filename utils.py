@@ -148,13 +148,14 @@ async def render_home(target, user_id: int):
     خیلی قدیمیه)، به‌جاش یک پیام متنی جدید فرستاده می‌شه.
     """
     from aiogram.exceptions import TelegramBadRequest
-    from db import get_balance
+    from db import get_balance, get_brand_name
     from keyboards import home_menu_kb
 
     bal = await run_db(get_balance, user_id)
+    brand_name = await run_db(get_brand_name)
     sep = "─" * 22
     text = (
-        f"🏠 خانه\n{sep}\n"
+        f"🏠 {brand_name}\n{sep}\n"
         f"💰 موجودی: {bal:,} تومان\n{sep}\n"
         f"یکی از گزینه‌های زیر رو انتخاب کن:"
     )
@@ -169,6 +170,32 @@ async def render_home(target, user_id: int):
         await target.answer()
     else:
         await target.answer(text, reply_markup=kb)
+
+
+def build_welcome_text(first_name: str, brand_name: str) -> str:
+    """
+    متن خوش‌آمدگویی شخصی‌سازی‌شده برای /start — فقط قابلیت‌های واقعی همین ربات
+    رو معرفی می‌کنه (نه یک لیست تبلیغاتی از قابلیت‌هایی که وجود ندارن).
+    """
+    safe_name = (first_name or "").strip() or "دوست عزیز"
+    sep = "─" * 22
+    return (
+        f"👋 سلام {safe_name} عزیز، به {brand_name} خوش اومدی! 🥳\n{sep}\n"
+        f"🚀 مطمئن‌ترین بستر خرید و مدیریت سرویس VPN بر پایه‌ی V2Ray\n"
+        f"🔒 ارتباط کاملاً رمزنگاری‌شده و ضدفیلتر\n\n"
+        f"✨ امکانات ربات:\n"
+        f"🛒 خرید آنی سرویس از دسته‌بندی‌های متنوع\n"
+        f"🎁 دریافت تست رایگان قبل از خرید\n"
+        f"🎛 ساخت پلن دلخواه — خودت حجم و مدت رو انتخاب کن\n"
+        f"💳 شارژ حساب با چند روش پرداخت\n"
+        f"📊 مشاهده‌ی لحظه‌ای وضعیت و حجم باقی‌مانده‌ی هر سرویس\n\n"
+        f"🎯 و بیشتر:\n"
+        f"👥 دعوت دوستان و دریافت پاداش رفرال\n"
+        f"🤝 امکان همکاری و نمایندگی فروش\n"
+        f"📋 تاریخچه‌ی کامل خریدها\n"
+        f"🎁 کدهای تخفیف برای خریدهای بیشتر\n{sep}\n"
+        f"📌 یکی از گزینه‌های زیر رو انتخاب کن:"
+    )
 
 
 # ================== EDIT-IN-PLACE FSM PROMPTS (کاهش شلوغی چت ادمین) ==================

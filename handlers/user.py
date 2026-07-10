@@ -11,7 +11,7 @@ from db import (
     connect as db_connect
 )
 from keyboards import home_menu_kb, home_button_kb
-from utils import run_db, chunk_blocks, send_chunks, render_home
+from utils import run_db, chunk_blocks, send_chunks, render_home, build_welcome_text
 
 router = Router()
 
@@ -113,7 +113,12 @@ async def start(message: types.Message, state: FSMContext):
                 except Exception:
                     pass
 
-    await render_home(message, message.from_user.id)
+    from db import get_brand_name
+    from keyboards import home_menu_kb
+
+    brand_name = await run_db(get_brand_name)
+    welcome_text = build_welcome_text(message.from_user.first_name, brand_name)
+    await message.answer(welcome_text, reply_markup=home_menu_kb(message.from_user.id))
 
 
 @router.callback_query(F.data == "menu:home")
