@@ -15,8 +15,9 @@ from db import (
     get_active_channels,
     connect as db_connect
 )
-from keyboards import home_menu_kb, home_button_kb, service_status_renew_kb
+from keyboards import home_menu_kb, home_button_kb
 from utils import run_db, chunk_blocks, send_chunks, render_home, build_welcome_text
+from states import ServiceNote
 
 router = Router()
 
@@ -149,16 +150,38 @@ async def cancel_fsm(call: types.CallbackQuery, state: FSMContext):
 
 
 # ================================================================
-# BALANCE
+# PROFILE (ترکیب موجودی + خریدها + اطلاعات کاربر در یک صفحه)
 # ================================================================
+# این هندلر جایگزین «💰 موجودی من» و «📋 خریدهای من» روی صفحه‌ی خانه شده.
+# «📋 خریدهای من» از دکمه‌ی داخل همین صفحه (menu:purchases) در دسترسه.
 
-@router.callback_query(F.data == "menu:balance")
-async def menu_balance(call: types.CallbackQuery):
-    bal = await run_db(get_balance, call.from_user.id)
-    await call.message.edit_text(
-        f"💰 موجودی شما: {bal:,} تومان",
-        reply_markup=home_button_kb()
+@router.callback_query(F.data == "menu:profile")
+async def menu_profile(call: types.CallbackQuery):
+    from db import get_user_stats
+
+    user_id = call.from_user.id
+    bal = await run_db(get_balance, user_id)
+    total_purchases, active_services = await run_db(get_user_stats, user_id)
+
+    username = f"@{call.from_user.username}" if call.from_user.username else "ثبت نشده"
+    full_name = call.from_user.full_name or "—"
+
+    sep = "─" * 22
+    text = (
+        f"👤 پروفایل من\n{sep}\n"
+        f"🆔 آیدی عددی: <code>{user_id}</code>\n"
+        f"🔖 آیدی تلگرام: {username}\n"
+        f"📛 نام: {html.escape(full_name)}\n{sep}\n"
+        f"💰 موجودی: {bal:,} تومان\n"
+        f"🛍 تعداد کل خریدها: {total_purchases}\n"
+        f"📡 سرویس‌های فعال: {active_services}\n{sep}\n"
     )
+    buttons = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 تاریخچه‌ی کامل خریدها", callback_data="menu:purchases")],
+        [InlineKeyboardButton(text="➕ شارژ حساب", callback_data="menu:deposit")],
+        [InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="menu:home")],
+    ])
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=buttons)
     await call.answer()
 
 
@@ -212,8 +235,27 @@ def _status_label(enable: bool, expire_ms: int, total: int, used: int) -> str:
     return "🟢 فعال"
 
 
+def _status_dot(enable: bool, expire_ms: int, total: int, used: int) -> str:
+    """فقط ایموجی وضعیت (بدون متن) — برای دکمه‌های لیست سرویس‌ها که جا کمتری دارن"""
+    now_ms = time.time() * 1000
+    if not enable:
+        return "🔴"
+    if expire_ms and expire_ms > 0 and now_ms > expire_ms:
+        return "⏰"
+    if total and total > 0 and used >= total:
+        return "📛"
+    return "🟢"
+
+
 @router.callback_query(F.data == "menu:status")
 async def menu_status(call: types.CallbackQuery):
+    """
+    به‌جای دامپ کامل هر سرویس، یه لیست دکمه‌ای می‌سازه — هر دکمه ایمیل یه
+    سرویسه (پیام کاربر: «روی سرویس ایمیل کاربر نوشته شده باشه»)، با تپ روی
+    هرکدوم وارد صفحه‌ی جزئیات/مدیریت همون سرویس می‌شه.
+    سرویس‌هایی که دیگه روی پنل اصلی پیدا نشن (حذف شده) اصلاً توی این لیست
+    نشون داده نمی‌شن — طبق درخواست کاربر.
+    """
     from db import get_user_vpn_accounts
     from panel import get_client_status
 
@@ -223,94 +265,226 @@ async def menu_status(call: types.CallbackQuery):
         await call.answer()
         return
 
-    await call.message.edit_text(
-        f"📊 وضعیت سرویس‌های شما ({len(accounts)} مورد)\n⏳ در حال دریافت اطلاعات لحظه‌ای از پنل..."
-    )
+    await call.message.edit_text("⏳ در حال بررسی سرویس‌های شما روی سرور...")
 
-    # همه‌ی درخواست‌های پنل رو موازی می‌زنیم — با N سرویس، به‌جای N برابر
-    # تایم‌اوت (حداکثر ۱۰ ثانیه هرکدوم طبق panel.py)، کل کار حداکثر یک تایم‌اوت طول می‌کشه
     live_results = await asyncio.gather(
-        *[get_client_status(acc[0]) for acc in accounts],  # acc[0] == email
+        *[get_client_status(acc[1]) for acc in accounts],  # acc[1] == email
         return_exceptions=True,
     )
 
-    sep = "─" * 22
-
+    buttons = []
     for acc, live in zip(accounts, live_results):
-        (email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db,
-         created_at, is_trial, service_name, category_name, purchase_id) = acc
+        (account_id, email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db,
+         created_at, is_trial, service_name, category_name, purchase_id, note) = acc
 
         live = live if isinstance(live, dict) else None
-        is_live = live is not None
+        if live is None:
+            # روی سرور اصلی پیدا نشد (حذف شده) — طبق درخواست کاربر، نشونش نمی‌دیم
+            continue
 
-        if is_live:
-            used = (live.get("up") or 0) + (live.get("down") or 0)
-            total = live.get("total") or 0
-            expire_ms = live.get("expiryTime") or 0
-            enable = live.get("enable", True)
-        else:
-            used = None
-            total = data_limit_db or 0
-            expire_ms = expire_time_db or 0
-            enable = True  # نمی‌دونیم؛ خوش‌بینانه فرض می‌کنیم فعاله
+        enable = live.get("enable", True)
+        total = live.get("total") or 0
+        used = (live.get("up") or 0) + (live.get("down") or 0)
+        expire_ms = live.get("expiryTime") or 0
+        dot = _status_dot(enable, expire_ms, total, used)
 
-        status = _status_label(enable, expire_ms, total, used or 0)
+        buttons.append([InlineKeyboardButton(text=f"{dot} {email}", callback_data=f"svcdetail:{account_id}")])
 
-        label = "🧪 تست رایگان" if is_trial else "💎 سرویس"
-        safe_service_name = html.escape(service_name or "")
-        safe_category_name = html.escape(category_name or "")
-        safe_email = html.escape(email or "")
+    if not buttons:
+        await call.message.edit_text(
+            "📊 هیچ سرویس فعالی روی سرور برات پیدا نشد.\n"
+            "(ممکنه سرویس‌هات از روی سرور اصلی حذف شده باشن)",
+            reply_markup=home_button_kb(),
+        )
+        await call.answer()
+        return
 
-        lines = [label]
-        if purchase_id:
-            lines.append(f"🔑 شماره سفارش: #{purchase_id}")
-        lines.append(f"📦 نام: {safe_service_name}")
-        if not is_trial:
-            lines.append(f"🗂 دسته‌بندی: {safe_category_name}")
-        lines.append(f"📧 ایمیل کلاینت: {safe_email}")
-        lines.append(f"وضعیت: {status}")
+    buttons.append([InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="menu:home")])
 
-        if expire_ms and expire_ms > 0:
-            expire_dt = datetime.fromtimestamp(expire_ms / 1000)
-            days_left = (expire_dt - datetime.now()).days
-            days_txt = f"({days_left} روز مانده)" if days_left >= 0 else "(منقضی شده)"
-            lines.append(f"📅 انقضا: {expire_dt.strftime('%Y-%m-%d')} {days_txt}")
-        else:
-            lines.append("📅 انقضا: نامحدود")
-
-        if total and total > 0:
-            used_v = used or 0
-            remaining = max(total - used_v, 0)
-            lines.append(f"📊 حجم: {_fmt_bytes(used_v)} از {_fmt_bytes(total)} مصرف شده")
-            bar = _progress_bar(used_v, total)
-            if bar:
-                lines.append(bar)
-            lines.append(f"📶 باقی‌مانده: {_fmt_bytes(remaining)}")
-        elif used is not None:
-            lines.append(f"📊 حجم مصرفی: {_fmt_bytes(used)} (سقف: ♾ نامحدود)")
-        else:
-            lines.append("📶 حجم: ♾ نامحدود")
-
-        if not is_live:
-            lines.append("⚠️ اتصال لحظه‌ای به پنل برقرار نشد — آخرین اطلاعات ذخیره‌شده نمایش داده شد.")
-
-        if sub_url:
-            safe_sub_url = html.escape(sub_url)
-            lines.append(f"🔗 لینک سابسکریپشن:\n<code>{safe_sub_url}</code>")
-
-        block = "\n".join(lines) + "\n" + sep
-
-        kb = service_status_renew_kb(purchase_id) if (purchase_id and not is_trial) else None
-        await call.message.answer(block, parse_mode="HTML", reply_markup=kb)
-
-        if len(accounts) > 1:
-            await asyncio.sleep(0.05)  # جلوگیری از خوردن به Flood Limit تلگرام
-
-    await call.message.answer(
-        "ℹ️ برای اتصال، لینک سابسکریپشن بالا رو داخل اپلیکیشن VPN خودت وارد کن.",
-        reply_markup=home_button_kb(),
+    await call.message.edit_text(
+        "یکی از سرویس های خود را انتخاب کنید تا وارد پنل تنظیمات و مدیریت سرویس خود شوید .",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
     )
     await call.answer()
+
+
+async def _render_service_detail(call: types.CallbackQuery, account_id: int) -> bool:
+    """
+    رندر صفحه‌ی جزئیات/مدیریت یک سرویس (وضعیت، حجم، انقضا، یادداشت + دکمه‌های
+    تمدید/روشن‌خاموش/یادداشت/لینک). هم از svcdetail و هم بعد از svctoggle صدا
+    زده می‌شه تا صفحه با آخرین وضعیت رندر شه. True برمی‌گردونه اگه موفق بود.
+    """
+    from db import get_vpn_account
+    from panel import get_client_status
+
+    acc = await run_db(get_vpn_account, account_id, call.from_user.id)
+    if not acc:
+        await call.message.edit_text("این سرویس پیدا نشد یا مال شما نیست.", reply_markup=home_button_kb())
+        return False
+
+    (account_id, email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db,
+     created_at, is_trial, service_name, category_name, purchase_id, note, owner_id) = acc
+
+    live = await get_client_status(email)
+    if live is None:
+        await call.message.edit_text(
+            "⚠️ این سرویس دیگه روی سرور اصلی پیدا نشد (احتمالاً حذف شده).",
+            reply_markup=home_button_kb(),
+        )
+        return False
+
+    enable = live.get("enable", True)
+    total = live.get("total") or 0
+    used = (live.get("up") or 0) + (live.get("down") or 0)
+    expire_ms = live.get("expiryTime") or 0
+    status = _status_label(enable, expire_ms, total, used)
+
+    sep = "─" * 22
+    lines = [f"وضعیت سرویس : {status}", sep]
+    lines.append(f"🗂 لوکیشن : {html.escape(service_name or '')}")
+    code = purchase_id if purchase_id else account_id
+    lines.append(f"🔑 کد سرویس: {code}")
+    lines.append(f"📧 ایمیل: {html.escape(email or '')}")
+    lines.append(sep)
+    lines.append(f"🏷 یادداشت شما: {html.escape(note) if note else 'تنظیم نشده...'}")
+    lines.append(sep)
+
+    if total and total > 0:
+        used_v = used or 0
+        remaining = max(total - used_v, 0)
+        lines.append(f"📥 حجم مصرف شده : {_fmt_bytes(used_v)}")
+        lines.append(f"♾ حجم سرویس : {_fmt_bytes(total)}")
+        bar = _progress_bar(used_v, total)
+        if bar:
+            lines.append(bar)
+        lines.append(f"📶 باقی‌مانده: {_fmt_bytes(remaining)}")
+    else:
+        lines.append(f"📥 حجم مصرف شده : {_fmt_bytes(used or 0)}")
+        lines.append("♾ حجم سرویس : نامحدود")
+
+    if expire_ms and expire_ms > 0:
+        expire_dt = datetime.fromtimestamp(expire_ms / 1000)
+        delta = expire_dt - datetime.now()
+        days_left = delta.days
+        hours_left = delta.seconds // 3600
+        if days_left >= 0:
+            days_txt = f"( {days_left} روز و {hours_left} ساعت دیگر )"
+        else:
+            days_txt = "( منقضی شده )"
+        lines.append(f"📅 فعال تا تاریخ : {expire_dt.strftime('%Y/%m/%d %H:%M')} {days_txt}")
+    else:
+        lines.append("📅 فعال تا تاریخ : نامحدود")
+
+    text = "\n".join(lines)
+
+    toggle_label = "🔴 خاموش کردن" if enable else "🟢 روشن کردن"
+    kb_rows = [
+        [InlineKeyboardButton(text="🏷 تنظیم یادداشت", callback_data=f"svcnote:{account_id}"),
+         InlineKeyboardButton(text=toggle_label, callback_data=f"svctoggle:{account_id}:{0 if enable else 1}")],
+    ]
+    if purchase_id and not is_trial:
+        kb_rows.append([
+            InlineKeyboardButton(text="🔄 تمدید سرویس", callback_data=f"renew:{purchase_id}"),
+            InlineKeyboardButton(text="🔗 دریافت لینک", callback_data=f"svclink:{account_id}"),
+        ])
+    else:
+        kb_rows.append([InlineKeyboardButton(text="🔗 دریافت لینک", callback_data=f"svclink:{account_id}")])
+    kb_rows.append([InlineKeyboardButton(text="🔙 برگشت به لیست سرویس‌ها", callback_data="menu:status")])
+
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    return True
+
+
+@router.callback_query(F.data.startswith("svcdetail:"))
+async def svc_detail(call: types.CallbackQuery):
+    account_id = int(call.data.split(":")[1])
+    await _render_service_detail(call, account_id)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("svctoggle:"))
+async def svc_toggle(call: types.CallbackQuery):
+    """
+    روشن/خاموش کردن واقعی کلاینت روی سرور اصلی (نه فقط توی دیتابیس خودمون).
+    توضیح کامل نحوه‌ی کار و ریسک‌هاش توی panel.py (PanelClient.set_client_enable) هست.
+    """
+    from db import get_vpn_account
+    from panel import set_client_enable
+
+    parts = call.data.split(":")
+    account_id = int(parts[1])
+    new_enable = bool(int(parts[2]))
+
+    acc = await run_db(get_vpn_account, account_id, call.from_user.id)
+    if not acc:
+        await call.answer("این سرویس پیدا نشد یا مال شما نیست.", show_alert=True)
+        return
+    email = acc[1]
+
+    ok = await set_client_enable(email, new_enable)
+    if not ok:
+        await call.answer("❌ تغییر وضعیت روی سرور ناموفق بود. دوباره تلاش کن.", show_alert=True)
+        return
+
+    await _render_service_detail(call, account_id)
+    await call.answer("✅ وضعیت سرویس تغییر کرد.")
+
+
+@router.callback_query(F.data.startswith("svclink:"))
+async def svc_link(call: types.CallbackQuery):
+    from db import get_vpn_account
+
+    account_id = int(call.data.split(":")[1])
+    acc = await run_db(get_vpn_account, account_id, call.from_user.id)
+    if not acc:
+        await call.answer("این سرویس پیدا نشد یا مال شما نیست.", show_alert=True)
+        return
+
+    sub_url = acc[3]
+    if not sub_url:
+        await call.answer("لینکی برای این سرویس ثبت نشده.", show_alert=True)
+        return
+
+    safe_sub_url = html.escape(sub_url)
+    await call.message.answer(
+        f"🔗 لینک سابسکریپشن سرویس شما:\n<code>{safe_sub_url}</code>",
+        parse_mode="HTML",
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("svcnote:"))
+async def svc_note_start(call: types.CallbackQuery, state: FSMContext):
+    from db import get_vpn_account
+
+    account_id = int(call.data.split(":")[1])
+    acc = await run_db(get_vpn_account, account_id, call.from_user.id)
+    if not acc:
+        await call.answer("این سرویس پیدا نشد یا مال شما نیست.", show_alert=True)
+        return
+
+    await state.set_state(ServiceNote.waiting_text)
+    await state.update_data(account_id=account_id)
+    await call.message.answer(
+        "🏷 یادداشت جدید برای این سرویس رو بفرست:\n"
+        "(برای حذف یادداشت فعلی، فقط یک خط تیره «-» بفرست)"
+    )
+    await call.answer()
+
+
+@router.message(ServiceNote.waiting_text)
+async def svc_note_save(message: types.Message, state: FSMContext):
+    from db import set_vpn_account_note
+
+    data = await state.get_data()
+    account_id = data.get("account_id")
+    await state.clear()
+
+    text = (message.text or "").strip()
+    note = None if text == "-" else text[:200]
+
+    await run_db(set_vpn_account_note, account_id, note)
+    await message.answer("✅ یادداشت ذخیره شد.", reply_markup=home_button_kb())
 
 
 

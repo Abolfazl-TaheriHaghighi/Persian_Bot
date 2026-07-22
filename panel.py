@@ -3,7 +3,6 @@ import logging
 import aiohttp
 import uuid as uuid_lib
 import time
-import json
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, quote
 
@@ -250,6 +249,57 @@ class PanelClient:
         })
         return bool(data and data.get("success"))
 
+    async def set_client_enable(self, email: str, enable: bool) -> bool:
+        """
+        فعال/غیرفعال کردن یک کلاینت — طبق API واقعیِ تأییدشده‌ی این پنل:
+            GET  /panel/api/clients/get/{email}     → کل رکورد کلاینت
+            POST /panel/api/clients/update/{email}  → جایگزینی کل رکورد
+
+        این endpoint مثل PATCH نیست؛ کل رکورد رو جایگزین می‌کنه، نه فقط فیلد
+        enable رو. برای همین اول رکورد کامل فعلی خونده می‌شه (get_client_config)،
+        فقط enable توش عوض می‌شه، و همون آبجکت کامل (با همون totalGB, expiryTime,
+        tgId و بقیه‌ی فیلدها) دوباره فرستاده می‌شه — طبق داکیومنت رسمی پنل که
+        صراحتاً نوشته: «the server replaces the row, it does not patch».
+        """
+        config = await self.get_client_config(email)
+        if not config:
+            logger.warning(f"set_client_enable: could not fetch current config for email={email!r}")
+            return False
+
+        config["enable"] = enable
+        # نکته‌ی مهم (پیدا شده از لاگ واقعی): آبجکتی که GET برمی‌گردونه فیلد
+        # email رو توش نداره (چون از مسیر URL قابل استنتاجه)، ولی خودِ
+        # endpoint آپدیت صراحتاً email رو هم توی بدنه لازم داره وگرنه با پیام
+        # "client email is required" رد می‌کنه. برای همین صریح ست می‌شه.
+        config["email"] = email
+        safe_email = quote(email, safe="")
+        data = await self._post(f"/panel/api/clients/update/{safe_email}", config)
+        if not data or not data.get("success"):
+            logger.warning(
+                f"set_client_enable: update failed for email={email!r} — "
+                f"response={data!r}"
+            )
+            return False
+        return True
+
+    async def get_client_config(self, email: str) -> dict | None:
+        """
+        رکورد کامل تنظیمات یک کلاینت (email, totalGB, expiryTime, tgId,
+        enable, ...) از GET /panel/api/clients/get/{email} — لازم قبل از هر
+        set_client_enable، چون update کل رکورد رو جایگزین می‌کنه نه patch.
+        """
+        safe_email = quote(email, safe="")
+        data = await self._get(f"/panel/api/clients/get/{safe_email}")
+        if data and data.get("success"):
+            return data.get("obj")
+        # نکته: اگه پاسخ یک JSON معتبر با success=false باشه (نه یک خطای
+        # HTTP/غیر-JSON)، _get هیچ warning ای لاگ نمی‌کنه چون از دیدش درخواست
+        # "موفق" بوده. برای همین اینجا جدا لاگ می‌کنیم تا دلیل واقعی fail شدن
+        # (endpoint وجود نداره؟ ایمیل اشتباهه؟ ...) توی لاگ سرور معلوم بشه.
+        logger.warning(f"get_client_config: unsuccessful response for email={email!r} — response={data!r}")
+        return None
+
+
 
 # ── Cached Client ───────────────────────────────────────────────
 
@@ -357,6 +407,27 @@ async def renew_vpn_account(email: str, add_days: int = 0, add_bytes: int = 0) -
             result = await client.renew_client(email, add_days, add_bytes)
 
     return bool(result and result.get("success"))
+
+
+async def set_client_enable(email: str, enable: bool) -> bool:
+    """
+    فعال/غیرفعال کردن یک کلاینت روی پنل — با retry روی سشن منقضی برای userpass.
+    توضیح کامل ریسک‌ها/روش کار در PanelClient.set_client_enable هست.
+    """
+    client = await _get_client()
+    if not client:
+        logger.warning("set_client_enable: no panel client available (not configured, or login/auth failed)")
+        return False
+
+    result = await client.set_client_enable(email, enable)
+
+    if not result and client.auth_type != "apikey":
+        _cache.invalidate()
+        client = await _get_client()
+        if client:
+            result = await client.set_client_enable(email, enable)
+
+    return bool(result)
 
 
 async def get_client_status(email: str) -> dict | None:

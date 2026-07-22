@@ -8,14 +8,13 @@ def home_menu_kb(user_id) -> InlineKeyboardMarkup:
     همه‌ی گزینه‌ها inline هستن تا چت شلوغ نشه و همه‌چیز با edit_text پیش بره.
     """
     buttons = [
-        [InlineKeyboardButton(text="📊 وضعیت سرویس‌ها", callback_data="menu:status"),
-         InlineKeyboardButton(text="💰 موجودی من", callback_data="menu:balance")],
-        [InlineKeyboardButton(text="📋 خریدهای من", callback_data="menu:purchases"),
+        [InlineKeyboardButton(text="🛒 خرید سرویس", callback_data="menu:shop")],
+        [InlineKeyboardButton(text="🎛 مدیریت سرویس‌ها", callback_data="menu:status"),
          InlineKeyboardButton(text="➕ شارژ حساب", callback_data="menu:deposit")],
-        [InlineKeyboardButton(text="🛒 خرید سرویس", callback_data="menu:shop"),
+        [InlineKeyboardButton(text="👤 پروفایل من", callback_data="menu:profile")],
+        [InlineKeyboardButton(text="💰 کسب درآمد", callback_data="menu:referral"),
          InlineKeyboardButton(text="🎁 تست رایگان", callback_data="menu:trial")],
-        [InlineKeyboardButton(text="👥 رفرال من", callback_data="menu:referral"),
-         InlineKeyboardButton(text="🤝 درخواست همکاری", callback_data="menu:partner")],
+        [InlineKeyboardButton(text="🤝 درخواست همکاری", callback_data="menu:partner")],
     ]
     if is_admin(user_id):
         buttons.append([InlineKeyboardButton(text="🛠 پنل ادمین", callback_data="menu:admin")])
@@ -51,28 +50,28 @@ def back_kb(cb: str):
 
 def admin_panel_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👥 لیست کاربران", callback_data="admin:users")],
-        [InlineKeyboardButton(text="🗂 مدیریت دسته‌بندی‌ها", callback_data="admin:categories")],
-        [InlineKeyboardButton(text="📦 مدیریت سرویس‌ها", callback_data="admin:services")],
-        [InlineKeyboardButton(text="🎁 کدهای تخفیف", callback_data="admin:discounts")],
-        [InlineKeyboardButton(text="💳 تراکنش‌های در انتظار", callback_data="admin:pending")],
-        [InlineKeyboardButton(text="🛍 تاریخچه خریدها", callback_data="admin:purchases")],
-        [InlineKeyboardButton(text="➕ افزودن دسته‌بندی", callback_data="admin:add_category")],
-        [InlineKeyboardButton(text="➕ افزودن سرویس", callback_data="admin:add_service")],
-        [InlineKeyboardButton(text="💸 تنظیم موجودی کاربر", callback_data="admin:edit_balance")],
-        [InlineKeyboardButton(text="🧪 مدیریت تست رایگان", callback_data="admin:trial_menu")],
-        [InlineKeyboardButton(text="🔗 تنظیمات رفرال", callback_data="admin:referral_menu")],
-        [InlineKeyboardButton(text="📢 کانال‌های اجباری", callback_data="admin:channels")],
-        [InlineKeyboardButton(text="⚙️ تنظیمات پنل VPN", callback_data="admin:panel_config")],
-        [InlineKeyboardButton(text="🤝 مدیریت همکاران", callback_data="admin:partners")],
-        [InlineKeyboardButton(text="👁 دسترسی دسته‌بندی‌ها", callback_data="admin:cat_visibility")],
-        [InlineKeyboardButton(text="📣 ارسال پیام گروهی", callback_data="admin:broadcast")],
-        [InlineKeyboardButton(text="🎛 پلن‌های دلخواه", callback_data="admin:custom_plans")],
-        [InlineKeyboardButton(text="🏷 نام‌گذاری کلاینت‌ها", callback_data="admin:naming")],
-        [InlineKeyboardButton(text="💾 پشتیبان‌گیری از دیتابیس", callback_data="admin:backup")],
-        [InlineKeyboardButton(text="💳 مدیریت روش‌های پرداخت", callback_data="admin:payment_methods")],
-        [InlineKeyboardButton(text="🎨 نام برند ربات", callback_data="admin:brand")],
-        [InlineKeyboardButton(text="🔑 لایسنس", callback_data="admin:license")],
+        [InlineKeyboardButton(text="👥 لیست کاربران", callback_data="admin:users"),
+         InlineKeyboardButton(text="🗂 مدیریت دسته‌بندی‌ها", callback_data="admin:categories")],
+        [InlineKeyboardButton(text="📦 مدیریت سرویس‌ها", callback_data="admin:services"),
+         InlineKeyboardButton(text="🎁 کدهای تخفیف", callback_data="admin:discounts")],
+        [InlineKeyboardButton(text="⏳ تراکنش‌های در انتظار تایید", callback_data="admin:pending"),
+         InlineKeyboardButton(text="🛍 تاریخچه خریدها", callback_data="admin:purchases")],
+        [InlineKeyboardButton(text="➕ افزودن دسته‌بندی", callback_data="admin:add_category"),
+         InlineKeyboardButton(text="➕ افزودن سرویس", callback_data="admin:add_service")],
+        [InlineKeyboardButton(text="💸 تنظیم موجودی کاربر", callback_data="admin:edit_balance"),
+         InlineKeyboardButton(text="🧪 مدیریت تست رایگان", callback_data="admin:trial_menu")],
+        [InlineKeyboardButton(text="🔗 تنظیمات رفرال", callback_data="admin:referral_menu"),
+         InlineKeyboardButton(text="📢 کانال‌های اجباری", callback_data="admin:channels")],
+        [InlineKeyboardButton(text="⚙️ تنظیمات پنل VPN", callback_data="admin:panel_config"),
+         InlineKeyboardButton(text="🤝 مدیریت همکاران", callback_data="admin:partners")],
+        [InlineKeyboardButton(text="👁 دسترسی دسته‌بندی‌ها", callback_data="admin:cat_visibility"),
+         InlineKeyboardButton(text="📣 ارسال پیام گروهی", callback_data="admin:broadcast")],
+        [InlineKeyboardButton(text="🎛 پلن‌های دلخواه", callback_data="admin:custom_plans"),
+         InlineKeyboardButton(text="🏷 نام‌گذاری کلاینت‌ها", callback_data="admin:naming")],
+        [InlineKeyboardButton(text="💾 پشتیبان‌گیری از دیتابیس", callback_data="admin:backup"),
+         InlineKeyboardButton(text="💳 مدیریت روش‌های پرداخت", callback_data="admin:payment_methods")],
+        [InlineKeyboardButton(text="🎨 شخصی‌سازی متن‌ها", callback_data="admin:brand"),
+         InlineKeyboardButton(text="🔑 لایسنس", callback_data="admin:license")],
         [InlineKeyboardButton(text="🔄 تمدید دستی کلاینت", callback_data="admin:renew_manual")],
         [InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="menu:home")],
     ])
@@ -247,16 +246,6 @@ def admin_naming_kb(cfg):
         [InlineKeyboardButton(text="🔄 ریست شمارنده به صفر", callback_data="admin:naming_reset")],
         [InlineKeyboardButton(text="🏷 تنظیم گروه پیش‌فرض کاربران", callback_data="admin:naming_set_group")],
         [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
-    ])
-
-
-def service_status_renew_kb(purchase_id: int, back_cb: str = "menu:status") -> InlineKeyboardMarkup:
-    """
-    دکمه‌ی تمدید کنار هر سرویس در «وضعیت سرویس‌ها» (menu:status در handlers/user.py).
-    هر سرویس حالا پیام مجزای خودش رو داره، پس این کیبورد فقط مخصوص همون سرویسه.
-    """
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 تمدید اشتراک", callback_data=f"renew:{purchase_id}")],
     ])
 
 

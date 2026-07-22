@@ -1,3 +1,4 @@
+import time
 import psycopg2
 from config import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
 
@@ -279,6 +280,7 @@ def init_db():
     """)
     cur.execute("ALTER TABLE vpn_accounts ADD COLUMN IF NOT EXISTS sub_id TEXT")
     cur.execute("ALTER TABLE vpn_accounts ADD COLUMN IF NOT EXISTS sub_url TEXT")
+    cur.execute("ALTER TABLE vpn_accounts ADD COLUMN IF NOT EXISTS note TEXT")
 
     # migrations برای دیتابیس‌های قبلی
     cur.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS data_limit_gb NUMERIC(10,2) NOT NULL DEFAULT 0")
@@ -897,6 +899,30 @@ def get_user_purchases(user_id):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def get_user_stats(user_id):
+    """
+    آمار خلاصه برای صفحه‌ی «پروفایل من»: تعداد کل خریدها + تعداد سرویس‌های
+    فعال. عمداً از COUNT() سبک استفاده شده (نه fetch کامل رکوردها) و «فعال»
+    بر اساس expire_time محلی محاسبه می‌شه (نه تماس زنده با پنل) — چون اینجا
+    فقط یک شمارشِ سریع لازمه، نه جزئیات لحظه‌ای، و رفتن سراغ پنل غیرضروری
+    کندش می‌کنه. expire_time=NULL یا 0 یعنی نامحدود (همیشه فعال حساب می‌شه).
+    """
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM purchases WHERE user_id=%s", (user_id,))
+    total_purchases = cur.fetchone()[0]
+
+    now_ms = int(time.time() * 1000)
+    cur.execute("""
+        SELECT COUNT(*) FROM vpn_accounts
+        WHERE user_id=%s AND (expire_time IS NULL OR expire_time = 0 OR expire_time > %s)
+    """, (user_id, now_ms))
+    active_services = cur.fetchone()[0]
+
+    conn.close()
+    return total_purchases, active_services
 
 
 def get_all_purchases():
@@ -1663,11 +1689,11 @@ def get_user_vpn_accounts(user_id):
     cur = conn.cursor()
     cur.execute("""
         SELECT
-            v.email, v.uuid, v.sub_url, v.inbound_id, v.expire_time,
+            v.id, v.email, v.uuid, v.sub_url, v.inbound_id, v.expire_time,
             v.data_limit, v.created_at, v.is_trial,
             COALESCE(p.service_name, s.name, 'تست رایگان') as service_name,
             COALESCE(c.name, '—') as category_name,
-            v.purchase_id
+            v.purchase_id, v.note
         FROM vpn_accounts v
         LEFT JOIN purchases p ON v.purchase_id = p.id
         LEFT JOIN services s ON p.service_id = s.id
@@ -1678,6 +1704,55 @@ def get_user_vpn_accounts(user_id):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def get_vpn_account(account_id, user_id=None):
+    """
+    اطلاعات کامل یک سرویس VPN مشخص (برای صفحه‌ی جزئیات/مدیریت سرویس).
+    اگه user_id داده بشه، مالکیت هم چک می‌شه (کاربر عادی/همکار فقط سرویس خودشون
+    رو می‌بینن)؛ برای ادمین با دسترسی کامل، user_id=None بده.
+    """
+    conn = connect()
+    cur = conn.cursor()
+    if user_id is not None:
+        cur.execute("""
+            SELECT
+                v.id, v.email, v.uuid, v.sub_url, v.inbound_id, v.expire_time,
+                v.data_limit, v.created_at, v.is_trial,
+                COALESCE(p.service_name, s.name, 'تست رایگان') as service_name,
+                COALESCE(c.name, '—') as category_name,
+                v.purchase_id, v.note, v.user_id
+            FROM vpn_accounts v
+            LEFT JOIN purchases p ON v.purchase_id = p.id
+            LEFT JOIN services s ON p.service_id = s.id
+            LEFT JOIN categories c ON s.category_id = c.id
+            WHERE v.id=%s AND v.user_id=%s
+        """, (account_id, user_id))
+    else:
+        cur.execute("""
+            SELECT
+                v.id, v.email, v.uuid, v.sub_url, v.inbound_id, v.expire_time,
+                v.data_limit, v.created_at, v.is_trial,
+                COALESCE(p.service_name, s.name, 'تست رایگان') as service_name,
+                COALESCE(c.name, '—') as category_name,
+                v.purchase_id, v.note, v.user_id
+            FROM vpn_accounts v
+            LEFT JOIN purchases p ON v.purchase_id = p.id
+            LEFT JOIN services s ON p.service_id = s.id
+            LEFT JOIN categories c ON s.category_id = c.id
+            WHERE v.id=%s
+        """, (account_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+
+def set_vpn_account_note(account_id, note):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE vpn_accounts SET note=%s WHERE id=%s", (note, account_id))
+    conn.commit()
+    conn.close()
 
 
 def has_previous_purchase(user_id):

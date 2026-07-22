@@ -197,3 +197,8 @@ class AdminWelcomeText(StatesGroup):
 # ---- متن سفارشی صفحه‌ی «خانه» ----
 class AdminHomeText(StatesGroup):
     waiting_text = State()
+
+
+# ---- یادداشت شخصی کاربر برای یک سرویس خاص (در صفحه‌ی مدیریت سرویس) ----
+class ServiceNote(StatesGroup):
+    waiting_text = State()
