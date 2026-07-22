@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 
 from aiogram import Router, types, F, Bot
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -16,7 +16,7 @@ from db import (
     connect as db_connect
 )
 from keyboards import home_menu_kb, home_button_kb
-from utils import run_db, chunk_blocks, send_chunks, render_home, build_welcome_text
+from utils import run_db, chunk_blocks, send_chunks, render_home, build_welcome_text, normalize_phone
 from states import ServiceNote
 
 router = Router()
@@ -522,3 +522,57 @@ async def menu_purchases(call: types.CallbackQuery):
         await send_chunks(call.message, chunks[1:])
     await call.message.answer("👇", reply_markup=home_button_kb())
     await call.answer()
+
+
+# ================================================================
+# SUPPORT (اطلاعات پشتیبانی — قابل مدیریت از پنل ادمین)
+# ================================================================
+
+@router.callback_query(F.data == "menu:support")
+async def menu_support(call: types.CallbackQuery):
+    from db import get_support_username, get_support_phone
+
+    username = await run_db(get_support_username)
+    phone = await run_db(get_support_phone)
+
+    sep = "─" * 22
+    lines = ["📞 پشتیبانی", sep]
+    if username:
+        lines.append(f"🆔 آیدی تلگرام: @{username.lstrip('@')}")
+    if phone:
+        lines.append(f"📱 شماره تماس: {phone}")
+    if not username and not phone:
+        lines.append("اطلاعات پشتیبانی هنوز توسط ادمین تنظیم نشده.")
+    text = "\n".join(lines)
+
+    buttons = []
+    if username:
+        buttons.append([InlineKeyboardButton(
+            text="💬 گفتگو با پشتیبانی",
+            url=f"https://t.me/{username.lstrip('@')}",
+        )])
+    buttons.append([InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="menu:home")])
+
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await call.answer()
+
+
+# ================================================================
+# GLOBAL PHONE COLLECTION
+# ================================================================
+# میدل‌ور سراسری (middlewares.py) وقتی کاربری بدون شماره‌ی ثبت‌شده روی هر
+# دکمه‌ای بزنه، ازش شماره می‌خواد. این هندلر اون شماره رو می‌گیره و ذخیره
+# می‌کنه. عمداً StateFilter(None) داره تا با فلوهای دیگه‌ای که خودشون منتظر
+# F.contact هستن (مثل تست رایگان یا درخواست همکاری، که state اختصاصی خودشون
+# رو دارن) تداخل نکنه — این فقط وقتی اجرا می‌شه که کاربر توی هیچ FSM دیگه‌ای نباشه.
+
+@router.message(StateFilter(None), F.contact)
+async def collect_phone_globally(message: types.Message):
+    from db import set_user_phone
+
+    phone = normalize_phone(message.contact.phone_number)
+    await run_db(set_user_phone, message.from_user.id, phone)
+    await message.answer(
+        "✅ شماره‌ت ثبت شد.\nحالا می‌تونی دوباره روی همون دکمه‌ای که می‌خواستی بزنی.",
+        reply_markup=types.ReplyKeyboardRemove(),
+    )

@@ -14,7 +14,8 @@ def home_menu_kb(user_id) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="👤 پروفایل من", callback_data="menu:profile")],
         [InlineKeyboardButton(text="💰 کسب درآمد", callback_data="menu:referral"),
          InlineKeyboardButton(text="🎁 تست رایگان", callback_data="menu:trial")],
-        [InlineKeyboardButton(text="🤝 درخواست همکاری", callback_data="menu:partner")],
+        [InlineKeyboardButton(text="🤝 درخواست همکاری", callback_data="menu:partner"),
+         InlineKeyboardButton(text="📞 پشتیبانی", callback_data="menu:support")],
     ]
     if is_admin(user_id):
         buttons.append([InlineKeyboardButton(text="🛠 پنل ادمین", callback_data="menu:admin")])
@@ -72,7 +73,8 @@ def admin_panel_kb():
          InlineKeyboardButton(text="💳 مدیریت روش‌های پرداخت", callback_data="admin:payment_methods")],
         [InlineKeyboardButton(text="🎨 شخصی‌سازی متن‌ها", callback_data="admin:brand"),
          InlineKeyboardButton(text="🔑 لایسنس", callback_data="admin:license")],
-        [InlineKeyboardButton(text="🔄 تمدید دستی کلاینت", callback_data="admin:renew_manual")],
+        [InlineKeyboardButton(text="🔄 تمدید دستی کلاینت", callback_data="admin:renew_manual"),
+         InlineKeyboardButton(text="📞 مدیریت پشتیبانی", callback_data="admin:support")],
         [InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="menu:home")],
     ])
 

@@ -12,6 +12,7 @@ from utils import run_db
 from backup import auto_backup_loop
 from handlers import user, payments, services, referral, admin, partner, broadcast
 from handlers import license_handler, renewal
+from middlewares import MembershipAndPhoneMiddleware
 
 logging.basicConfig(level=logging.INFO)
 
@@ -80,6 +81,11 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
+
+    # میدل‌ور سراسری: قبل از هر دکمه (callback query) چک می‌کنه کاربر عضو
+    # کانال‌های اجباری هست و شماره‌ش ثبت شده — روی dp.callback_query یعنی
+    # پیام‌های متنی/دستورات اصلاً از این مسیر رد نمی‌شن، فقط دکمه‌ها.
+    dp.callback_query.middleware(MembershipAndPhoneMiddleware())
 
     await setup_bot_menu(bot)
 

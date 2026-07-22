@@ -202,3 +202,9 @@ class AdminHomeText(StatesGroup):
 # ---- یادداشت شخصی کاربر برای یک سرویس خاص (در صفحه‌ی مدیریت سرویس) ----
 class ServiceNote(StatesGroup):
     waiting_text = State()
+
+
+# ---- مدیریت اطلاعات پشتیبانی (آیدی تلگرام + شماره تماس) ----
+class AdminSupportInfo(StatesGroup):
+    waiting_username = State()
+    waiting_phone = State()

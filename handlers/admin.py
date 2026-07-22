@@ -2992,3 +2992,81 @@ async def admin_hometext_set_save(message: types.Message, state: FSMContext):
         "✅ متن صفحه‌ی خانه جدید ذخیره شد.\nبرای دیدنش «🏠 بازگشت به خانه» رو بزن.",
         reply_markup=home_button_kb()
     )
+
+
+# ================================================================
+# SUPPORT INFO (آیدی تلگرام + شماره تماس پشتیبانی)
+# ================================================================
+
+from db import get_support_username, set_support_username, get_support_phone, set_support_phone
+from states import AdminSupportInfo
+
+
+@router.callback_query(F.data == "admin:support")
+async def admin_support_menu(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    username = await run_db(get_support_username)
+    phone = await run_db(get_support_phone)
+    sep = "─" * 22
+    text = (
+        f"📞 مدیریت پشتیبانی\n{sep}\n"
+        f"🆔 آیدی تلگرام فعلی: {('@' + username) if username else 'تنظیم نشده'}\n"
+        f"📱 شماره تماس فعلی: {phone or 'تنظیم نشده'}\n{sep}\n"
+        f"این اطلاعات دقیقاً همینی که کاربرها با زدن «📞 پشتیبانی» می‌بینن."
+    )
+    buttons = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ تغییر آیدی تلگرام", callback_data="admin:support_set_username")],
+        [InlineKeyboardButton(text="✏️ تغییر شماره تماس", callback_data="admin:support_set_phone")],
+        [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
+    ])
+    await call.message.edit_text(text, reply_markup=buttons)
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:support_set_username")
+async def admin_support_set_username_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminSupportInfo.waiting_username)
+    await start_prompt(
+        call, state,
+        "🆔 آیدی تلگرام پشتیبانی رو بدون @ وارد کن:\n(برای حذف، فقط یک خط تیره «-» بفرست)"
+    )
+    await call.answer()
+
+
+@router.message(AdminSupportInfo.waiting_username)
+async def admin_support_set_username_save(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    username = "" if text == "-" else text.lstrip("@")
+    await run_db(set_support_username, username)
+    await finish_prompt(
+        message, state,
+        "✅ آیدی پشتیبانی ذخیره شد." if username else "✅ آیدی پشتیبانی پاک شد.",
+        reply_markup=home_button_kb()
+    )
+
+
+@router.callback_query(F.data == "admin:support_set_phone")
+async def admin_support_set_phone_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminSupportInfo.waiting_phone)
+    await start_prompt(
+        call, state,
+        "📱 شماره تماس پشتیبانی رو وارد کن:\n(برای حذف، فقط یک خط تیره «-» بفرست)"
+    )
+    await call.answer()
+
+
+@router.message(AdminSupportInfo.waiting_phone)
+async def admin_support_set_phone_save(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    phone = "" if text == "-" else text
+    await run_db(set_support_phone, phone)
+    await finish_prompt(
+        message, state,
+        "✅ شماره‌ی پشتیبانی ذخیره شد." if phone else "✅ شماره‌ی پشتیبانی پاک شد.",
+        reply_markup=home_button_kb()
+    )

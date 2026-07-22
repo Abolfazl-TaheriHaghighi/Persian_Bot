@@ -10,13 +10,41 @@ from db import (
     apply_renewal_after_panel_success,
     get_balance,
     log_manual_renewal,
+    is_partner,
+    get_categories_for_user,
 )
 from utils import run_db, data_label_short, notify_admins
 from panel import renew_vpn_account
-from keyboards import renew_confirm_kb, home_button_kb, cancel_kb, admin_panel_kb
+from keyboards import renew_confirm_kb, home_button_kb, cancel_kb, admin_panel_kb, categories_kb
 from states import AdminRenewClient
 
 router = Router()
+
+
+async def _redirect_to_shop_with_explanation(call: CallbackQuery, reason: str):
+    """
+    وقتی تمدید یه سرویس ممکن نباشه (پلن دلخواه، مالکیت نامعتبر و...)، به‌جای
+    ول کردن کاربر با فقط یه popup، می‌بریمش به فروشگاه و توضیح می‌دیم که
+    می‌تونه به‌جاش یه سرویس جدید بخره.
+    """
+    partner = await run_db(is_partner, call.from_user.id)
+    categories = await run_db(get_categories_for_user, partner, call.from_user.id)
+
+    if not categories:
+        await call.message.edit_text(
+            f"⚠️ {reason}\n\n"
+            f"در حال حاضر دسته‌بندی‌ای هم برای خرید سرویس جدید موجود نیست.",
+            reply_markup=home_button_kb(),
+        )
+        return
+
+    bal = await run_db(get_balance, call.from_user.id)
+    await call.message.edit_text(
+        f"⚠️ {reason}\n"
+        f"می‌تونی به‌جاش یه سرویس جدید بخری 👇\n\n"
+        f"🛒 فروشگاه\n💰 موجودی شما: {bal:,} تومان\n\nیه دسته‌بندی انتخاب کن:",
+        reply_markup=categories_kb(categories),
+    )
 
 
 # ================== مسیر کاربر/همکار (از صفحه‌ی وضعیت سرویس) ==================
@@ -29,6 +57,9 @@ async def renew_prompt(call: CallbackQuery):
         await call.answer(
             "این سرویس امکان تمدید خودکار نداره (یا مال شما نیست).",
             show_alert=True,
+        )
+        await _redirect_to_shop_with_explanation(
+            call, "این سرویس امکان تمدید خودکار نداره (یا مال شما نیست)."
         )
         return
 
@@ -55,6 +86,7 @@ async def renew_confirm(call: CallbackQuery):
     info = await run_db(get_renewal_info, purchase_id, user_id)
     if not info:
         await call.answer("این سرویس پیدا نشد یا مال شما نیست.", show_alert=True)
+        await _redirect_to_shop_with_explanation(call, "این سرویس پیدا نشد یا مال شما نیست.")
         return
     email, service_id, service_name, price, duration_days, data_limit_gb, owner_id = info
 

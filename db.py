@@ -2217,3 +2217,47 @@ def reset_home_text():
     cur.execute("DELETE FROM bot_settings WHERE key='home_text'")
     conn.commit()
     conn.close()
+
+
+# ================== SUPPORT INFO (اطلاعات پشتیبانی، قابل مدیریت از پنل ادمین) ==================
+
+def get_support_username() -> str:
+    """آیدی تلگرام پشتیبانی (بدون @). خالی یعنی هنوز تنظیم نشده."""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM bot_settings WHERE key='support_username'")
+    r = cur.fetchone()
+    conn.close()
+    return r[0] if r and r[0] else ""
+
+
+def set_support_username(username: str):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO bot_settings (key, value) VALUES ('support_username', %s)
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
+    """, (username,))
+    conn.commit()
+    conn.close()
+
+
+def get_support_phone() -> str:
+    """شماره تماس پشتیبانی. خالی یعنی هنوز تنظیم نشده."""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM bot_settings WHERE key='support_phone'")
+    r = cur.fetchone()
+    conn.close()
+    return r[0] if r and r[0] else ""
+
+
+def set_support_phone(phone: str):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO bot_settings (key, value) VALUES ('support_phone', %s)
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
+    """, (phone,))
+    conn.commit()
+    conn.close()
