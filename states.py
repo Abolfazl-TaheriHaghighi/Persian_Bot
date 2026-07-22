@@ -180,3 +180,20 @@ class AdminEditPaymentCard(StatesGroup):
 # ---- نام برند ربات (شخصی‌سازی متن‌های کاربری) ----
 class AdminBrandName(StatesGroup):
     waiting_name = State()
+
+
+# ---- تمدید دستی اشتراک توسط ادمین (با ایمیل/آیدی کلاینت) ----
+class AdminRenewClient(StatesGroup):
+    waiting_email = State()
+    waiting_days = State()
+    waiting_gb = State()
+
+
+# ---- متن خوش‌آمدگویی سفارشی (/start) ----
+class AdminWelcomeText(StatesGroup):
+    waiting_text = State()
+
+
+# ---- متن سفارشی صفحه‌ی «خانه» ----
+class AdminHomeText(StatesGroup):
+    waiting_text = State()

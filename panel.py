@@ -169,10 +169,10 @@ class PanelClient:
 
         if not inbound_ids:
             inbound_ids = await self.get_all_inbound_ids()
-            if not inbound_ids and self.inbound_id:
-                inbound_ids = [self.inbound_id]
-            if not inbound_ids:
-                return None
+        if not inbound_ids and self.inbound_id:
+            inbound_ids = [self.inbound_id]
+        if not inbound_ids:
+            return None
 
         payload = {
             "client": {
@@ -199,6 +199,27 @@ class PanelClient:
             "data_limit": data_limit_bytes,
             "inbound_ids": inbound_ids,
         }
+
+    async def renew_client(self, email: str, add_days: int = 0, add_bytes: int = 0) -> dict | None:
+        """
+        تمدید اشتراک (افزایش مدت/حجم) از طریق endpoint اختصاصی bulkAdjust.
+        برخلاف add_client/update که مقادیر رو *جایگزین* می‌کنن، این endpoint
+        به مقدار فعلی expiry/حجم *اضافه* می‌کنه. طبق داکیومنت پنل، اگه فقط
+        افزایش روز مدنظره نباید addBytes رو اصلاً بفرستیم (و برعکس) — برای
+        همین اینجا هرکدوم صفر/خالی بود از payload حذف می‌شه، نه با مقدار 0.
+        """
+        payload = {"emails": [email]}
+        if add_days:
+            payload["addDays"] = add_days
+        if add_bytes:
+            payload["addBytes"] = add_bytes
+        if len(payload) == 1:  # نه addDays نه addBytes
+            return None
+
+        data = await self._post("/panel/api/clients/bulkAdjust", payload)
+        if not data or not data.get("success"):
+            return None
+        return {"success": True, "adjusted": data.get("obj")}
 
     async def get_client_stat(self, email: str) -> dict | None:
         # نکته: طبق داکیومنت رسمی API این پنل، مسیر ترافیک کلاینت زیر Clients است
@@ -260,10 +281,9 @@ class _ClientCache:
             client = PanelClient(cfg)
 
             if client.auth_type == "apikey":
-                from pro_guard import is_pro
-                if not is_pro():
-                    self._client = None
-                    return None
+                # API Key دیگه مخصوص پرو نیست — چون اتصال یوزر/پس (لاگین با
+                # کوکی) دیگه اصلاً کار نمی‌کنه، API Key تنها روش قابل‌اعتماد
+                # اتصال به پنله و باید برای همه (فری/پرو) در دسترس باشه.
                 self._client = client
                 self._logged_in_at = datetime.now()
                 return self._client
@@ -303,7 +323,9 @@ async def create_vpn_account(
     client = await _get_client()
     if not client:
         return None
+
     result = await client.add_client(email, duration_days, data_limit_gb)
+
     # برای apikey، دوباره لاگین کردن هیچ فرقی نمی‌کنه (سشنی برای رفرش شدن وجود ندارد)
     # پس فقط برای userpass دوباره تلاش می‌کنیم (شاید سشن منقضی شده باشه)
     if result is None and client.auth_type != "apikey":
@@ -320,16 +342,36 @@ async def create_vpn_account(
     return result
 
 
+async def renew_vpn_account(email: str, add_days: int = 0, add_bytes: int = 0) -> bool:
+    """تمدید (افزایش مدت/حجم) یک کلاینت — با retry روی سشن منقضی برای userpass"""
+    client = await _get_client()
+    if not client:
+        return False
+
+    result = await client.renew_client(email, add_days, add_bytes)
+
+    if result is None and client.auth_type != "apikey":
+        _cache.invalidate()
+        client = await _get_client()
+        if client:
+            result = await client.renew_client(email, add_days, add_bytes)
+
+    return bool(result and result.get("success"))
+
+
 async def get_client_status(email: str) -> dict | None:
     client = await _get_client()
     if not client:
         return None
+
     result = await client.get_client_stat(email)
+
     if result is None and client.auth_type != "apikey":
         _cache.invalidate()
         client = await _get_client()
         if client:
             result = await client.get_client_stat(email)
+
     return result
 
 
@@ -344,10 +386,11 @@ async def test_panel_connection() -> tuple[bool, str]:
         ok = await client.login()
         if not ok:
             return False, (
-                f"❌ لاگین ناموفق\n"
-                f"🌐 URL: {client.base_url}{client.panel_path}/login\n"
-                f"یوزر/پس رو چک کن (به حروف کوچیک/بزرگ حساسه)\n"
-                f"یا احتمالاً پنل در دسترس نیست / تایم‌اوت شده (لاگ سرور رو چک کن)"
+                f"❌ لاگین با یوزر/پس ناموفق\n"
+                f"🌐 URL: {client.base_url}{client.panel_path}/login\n\n"
+                f"⚠️ روش اتصال یوزر/پس روی این نسخه از پنل پشتیبانی نمی‌شه.\n"
+                f"از منوی «⚙️ تنظیمات پنل VPN» روش اتصال رو به «🔑 API Key» "
+                f"تغییر بده و کلید API رو از پنل بگیر و وارد کن."
             )
     elif client.auth_type == "apikey":
         if not client.api_key:

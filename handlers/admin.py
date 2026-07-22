@@ -1057,8 +1057,9 @@ async def admin_panel_toggle_auth(call: types.CallbackQuery):
         return
     cfg = await run_db(get_panel_config)
     new_auth = "apikey" if cfg[1] == "userpass" else "userpass"
-    if new_auth == "apikey" and not await require_pro(call, "اتصال با API Key"):
-        return
+    # نکته: قفل require_pro از این‌جا برداشته شد — API Key دیگه مخصوص پرو
+    # نیست، چون یوزر/پس (لاگین با کوکی) دیگه روی پنل کار نمی‌کنه و API Key
+    # تنها روش قابل‌اعتماد اتصاله؛ باید برای همه (فری/پرو) در دسترس باشه.
     await run_db(update_panel_config, auth_type=new_auth)
     from panel import invalidate_panel_cache
     invalidate_panel_cache()
@@ -2837,11 +2838,15 @@ async def admin_pm_card_edit_save(message: types.Message, state: FSMContext):
 
 
 # ================================================================
-# BRAND NAME (نام برند ربات — شخصی‌سازی متن‌های کاربری)
+# TEXT CUSTOMIZATION (نام برند + متن خوش‌آمدگویی /start + متن صفحه‌ی خانه)
 # ================================================================
 
-from db import get_brand_name, set_brand_name
-from states import AdminBrandName
+from db import (
+    get_brand_name, set_brand_name,
+    get_welcome_text, set_welcome_text, reset_welcome_text,
+    get_home_text, set_home_text, reset_home_text,
+)
+from states import AdminBrandName, AdminWelcomeText, AdminHomeText
 
 
 @router.callback_query(F.data == "admin:brand")
@@ -2851,12 +2856,15 @@ async def admin_brand_menu(call: types.CallbackQuery):
     brand_name = await run_db(get_brand_name)
     sep = "─" * 22
     text = (
-        f"🎨 نام برند ربات\n{sep}\n"
-        f"این نام داخل پیام خوش‌آمدگویی و سرصفحه‌ی «خانه» به کاربرها نشون داده می‌شه.\n{sep}\n"
-        f"📛 نام فعلی: {brand_name}\n"
+        f"🎨 شخصی‌سازی متن‌های ربات\n{sep}\n"
+        f"📛 نام برند فعلی: {brand_name}\n{sep}\n"
+        f"از دکمه‌های زیر می‌تونی نام برند، متن خوش‌آمدگویی (/start) و متن "
+        f"صفحه‌ی «خانه» رو کاملاً دلخواه تنظیم کنی."
     )
     buttons = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ تغییر نام برند", callback_data="admin:brand_set")],
+        [InlineKeyboardButton(text="✏️ ویرایش متن خوش‌آمدگویی (/start)", callback_data="admin:welcome_set")],
+        [InlineKeyboardButton(text="✏️ ویرایش متن صفحه‌ی خانه", callback_data="admin:hometext_set")],
         [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
     ])
     await call.message.edit_text(text, reply_markup=buttons)
@@ -2892,5 +2900,95 @@ async def admin_brand_set_save(message: types.Message, state: FSMContext):
         message, state,
         f"✅ نام برند تنظیم شد: {name}\n"
         f"از این پس در پیام خوش‌آمدگویی و سرصفحه‌ی خانه نشون داده می‌شه.",
+        reply_markup=home_button_kb()
+    )
+
+
+# ---- متن خوش‌آمدگویی (/start) ----
+
+@router.callback_query(F.data == "admin:welcome_set")
+async def admin_welcome_set_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    current = await run_db(get_welcome_text)
+    await state.set_state(AdminWelcomeText.waiting_text)
+    await start_prompt(
+        call, state,
+        "✏️ متن جدید خوش‌آمدگویی (/start) رو بفرست.\n\n"
+        "می‌تونی از این Placeholder ها استفاده کنی (اختیاری):\n"
+        "• {name} — اسم کوچیک کاربر\n"
+        "• {brand} — نام برند ربات\n"
+        "• {sep} — یک خط جداکننده\n\n"
+        "برای بازگشت به متن پیش‌فرض، بنویس: /reset\n\n"
+        f"📄 متن فعلی:\n{current}"
+    )
+    await call.answer()
+
+
+@router.message(AdminWelcomeText.waiting_text)
+async def admin_welcome_set_save(message: types.Message, state: FSMContext):
+    text = message.text
+    if text and text.strip() == "/reset":
+        await run_db(reset_welcome_text)
+        await finish_prompt(message, state, "✅ متن خوش‌آمدگویی به حالت پیش‌فرض برگشت.", reply_markup=home_button_kb())
+        return
+    if not text or not text.strip():
+        await message.answer("❌ نمی‌تونه خالی باشه. دوباره بفرست (یا /reset برای پیش‌فرض):")
+        return
+    if len(text) > 3500:
+        await message.answer("❌ خیلی طولانیه (سقف پیام تلگرام رو رد می‌کنه). کوتاه‌ترش کن:")
+        return
+
+    # نکته‌ی امنیتی: عمداً اینجا .format() تست نمی‌کنیم و به کاربر اجازه‌ی هر
+    # placeholder ای رو می‌دیم؛ سمت مصرف (utils.build_welcome_text) با یک
+    # فرمت‌دهنده‌ی امن (try/except) اگه placeholder نامعتبر بود، کل متن خام
+    # رو برمی‌گردونه نه این‌که برای همه‌ی کاربرها کرش کنه.
+    await run_db(set_welcome_text, text)
+    await finish_prompt(
+        message, state,
+        "✅ متن خوش‌آمدگویی جدید ذخیره شد.\nبرای دیدنش /start رو دوباره بزن.",
+        reply_markup=home_button_kb()
+    )
+
+
+# ---- متن صفحه‌ی خانه ----
+
+@router.callback_query(F.data == "admin:hometext_set")
+async def admin_hometext_set_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    current = await run_db(get_home_text)
+    await state.set_state(AdminHomeText.waiting_text)
+    await start_prompt(
+        call, state,
+        "✏️ متن جدید صفحه‌ی «خانه» رو بفرست.\n\n"
+        "می‌تونی از این Placeholder ها استفاده کنی (اختیاری):\n"
+        "• {brand} — نام برند ربات\n"
+        "• {balance} — موجودی کاربر (فرمت‌شده با کاما)\n"
+        "• {sep} — یک خط جداکننده\n\n"
+        "برای بازگشت به متن پیش‌فرض، بنویس: /reset\n\n"
+        f"📄 متن فعلی:\n{current}"
+    )
+    await call.answer()
+
+
+@router.message(AdminHomeText.waiting_text)
+async def admin_hometext_set_save(message: types.Message, state: FSMContext):
+    text = message.text
+    if text and text.strip() == "/reset":
+        await run_db(reset_home_text)
+        await finish_prompt(message, state, "✅ متن صفحه‌ی خانه به حالت پیش‌فرض برگشت.", reply_markup=home_button_kb())
+        return
+    if not text or not text.strip():
+        await message.answer("❌ نمی‌تونه خالی باشه. دوباره بفرست (یا /reset برای پیش‌فرض):")
+        return
+    if len(text) > 3500:
+        await message.answer("❌ خیلی طولانیه (سقف پیام تلگرام رو رد می‌کنه). کوتاه‌ترش کن:")
+        return
+
+    await run_db(set_home_text, text)
+    await finish_prompt(
+        message, state,
+        "✅ متن صفحه‌ی خانه جدید ذخیره شد.\nبرای دیدنش «🏠 بازگشت به خانه» رو بزن.",
         reply_markup=home_button_kb()
     )

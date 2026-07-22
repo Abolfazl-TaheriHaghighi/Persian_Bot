@@ -10,9 +10,8 @@ from db import init_db, update_license_checked
 from license import check_license_from_db, warm_cache, clear_cache
 from utils import run_db
 from backup import auto_backup_loop
-
 from handlers import user, payments, services, referral, admin, partner, broadcast
-from handlers import license_handler
+from handlers import license_handler, renewal
 
 logging.basicConfig(level=logging.INFO)
 
@@ -44,7 +43,6 @@ async def daily_license_check(bot: Bot):
                 continue
 
             days_left = result.get("days_left")
-
             if not result.get("valid"):
                 if result.get("error") == "لایسنس منقضی شده":
                     await bot.send_message(
@@ -71,7 +69,6 @@ async def main():
 
     # گرم کردن cache لایسنس — از run_db
     await run_db(warm_cache, BOT_TOKEN)
-
     from license import _C as lic_result
     if lic_result.get("valid"):
         if lic_result.get("permanent"):
@@ -93,6 +90,7 @@ async def main():
     dp.include_router(partner.router)
     dp.include_router(broadcast.router)
     dp.include_router(license_handler.router)
+    dp.include_router(renewal.router)
     dp.include_router(admin.router)
 
     asyncio.create_task(daily_license_check(bot))

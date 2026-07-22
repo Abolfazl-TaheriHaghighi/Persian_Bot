@@ -1,3 +1,8 @@
+import asyncio
+import html
+import time
+from datetime import datetime
+
 from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -10,7 +15,7 @@ from db import (
     get_active_channels,
     connect as db_connect
 )
-from keyboards import home_menu_kb, home_button_kb
+from keyboards import home_menu_kb, home_button_kb, service_status_renew_kb
 from utils import run_db, chunk_blocks, send_chunks, render_home, build_welcome_text
 
 router = Router()
@@ -117,7 +122,7 @@ async def start(message: types.Message, state: FSMContext):
     from keyboards import home_menu_kb
 
     brand_name = await run_db(get_brand_name)
-    welcome_text = build_welcome_text(message.from_user.first_name, brand_name)
+    welcome_text = await build_welcome_text(message.from_user.first_name, brand_name)
     await message.answer(welcome_text, reply_markup=home_menu_kb(message.from_user.id))
 
 
@@ -160,27 +165,57 @@ async def menu_balance(call: types.CallbackQuery):
 # ================================================================
 # SERVICE STATUS
 # ================================================================
-# نکته‌ی مهم: این بخش دیگه به پنل زنده وصل نمی‌شه (get_client_status حذف شد).
-# چون اتصال زنده به پنل کند/ناپایدار بود و باعث تاخیر و timeout می‌شد، الان فقط
-# از اطلاعات ذخیره‌شده در دیتابیس خودِ ربات (سریع و همیشه در دسترس) استفاده می‌کنیم
-# و کاربر رو برای وضعیت لحظه‌ای (حجم مصرفی زنده) به اپلیکیشن VPN خودش با لینک ساب
-# هدایت می‌کنیم — چون خودِ اپ‌های VPN معمولاً وضعیت مصرف رو از سرور می‌خونن.
+# این بخش برخلاف قبل، برای هر سرویس با get_client_status وضعیت لحظه‌ای رو
+# مستقیم از پنل می‌گیره (حجم مصرفی/کل، تاریخ انقضا، فعال/غیرفعال بودن روی
+# پنل). همه‌ی درخواست‌ها موازی (asyncio.gather) زده می‌شن تا با چند سرویس هم
+# صفحه کند نشه. اگه پنل جواب نداد (قطعی/تایم‌اوت)، به‌جای کرش، همون سرویس با
+# آخرین اطلاعات ذخیره‌شده در دیتابیس + یک هشدار کوچیک نمایش داده می‌شه.
+#
+# نکته: sub_url همیشه از دیتابیس خودمون میاد چون endpoint ترافیک پنل اصلاً
+# subId رو برنمی‌گردونه (حتی خودِ پنل هم اونو جایی ذخیره نمی‌کنه، فقط لحظه‌ی
+# ساخت اکانت تولید می‌شه) — این تنها منبع ممکن برای لینک ساب‌ه.
+#
+# دکمه‌ی تمدید فقط وقتی نشون داده می‌شه که purchase_id داشته باشیم (نه تست
+# رایگان) — تمدید پلن‌های دلخواه (بدون service_id ثابت) فعلاً پشتیبانی نمی‌شه.
 
-def _fmt_total_bytes(b) -> str:
-    if not b or b <= 0:
-        return "♾ نامحدود"
+def _fmt_bytes(b) -> str:
+    if b is None:
+        return "—"
     b = float(b)
+    if b <= 0:
+        return "0 B"
     if b >= 1024 ** 3:
         return f"{b / 1024 ** 3:.2f} GB"
     if b >= 1024 ** 2:
         return f"{b / 1024 ** 2:.0f} MB"
-    return f"{b / 1024:.0f} KB"
+    if b >= 1024:
+        return f"{b / 1024:.0f} KB"
+    return f"{b:.0f} B"
+
+
+def _progress_bar(used: float, total: float, width: int = 10) -> str:
+    if not total or total <= 0:
+        return ""
+    pct = min(max(used / total, 0.0), 1.0)
+    filled = round(pct * width)
+    return "🟩" * filled + "⬜️" * (width - filled) + f"  {pct * 100:.0f}%"
+
+
+def _status_label(enable: bool, expire_ms: int, total: int, used: int) -> str:
+    now_ms = time.time() * 1000
+    if not enable:
+        return "🔴 غیرفعال (روی پنل خاموش شده)"
+    if expire_ms and expire_ms > 0 and now_ms > expire_ms:
+        return "⏰ منقضی شده"
+    if total and total > 0 and used >= total:
+        return "📛 اتمام حجم"
+    return "🟢 فعال"
 
 
 @router.callback_query(F.data == "menu:status")
 async def menu_status(call: types.CallbackQuery):
-    import html
     from db import get_user_vpn_accounts
+    from panel import get_client_status
 
     accounts = await run_db(get_user_vpn_accounts, call.from_user.id)
     if not accounts:
@@ -188,57 +223,95 @@ async def menu_status(call: types.CallbackQuery):
         await call.answer()
         return
 
-    sep = "─" * 22
-    header = f"📊 وضعیت سرویس‌های شما\n{sep}\n"
-    footer = (
-        "\nℹ️ برای دیدن وضعیت لحظه‌ای (حجم مصرفی/باقی‌مانده)، لینک سابسکریپشن بالا رو "
-        "داخل اپلیکیشن VPN خودت وارد کن و از همون‌جا وضعیت سرویست رو ببین."
+    await call.message.edit_text(
+        f"📊 وضعیت سرویس‌های شما ({len(accounts)} مورد)\n⏳ در حال دریافت اطلاعات لحظه‌ای از پنل..."
     )
 
-    blocks = []
-    for acc in accounts:
+    # همه‌ی درخواست‌های پنل رو موازی می‌زنیم — با N سرویس، به‌جای N برابر
+    # تایم‌اوت (حداکثر ۱۰ ثانیه هرکدوم طبق panel.py)، کل کار حداکثر یک تایم‌اوت طول می‌کشه
+    live_results = await asyncio.gather(
+        *[get_client_status(acc[0]) for acc in accounts],  # acc[0] == email
+        return_exceptions=True,
+    )
+
+    sep = "─" * 22
+
+    for acc, live in zip(accounts, live_results):
         (email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db,
          created_at, is_trial, service_name, category_name, purchase_id) = acc
 
-        label = "🧪 تست رایگان" if is_trial else "💎 سرویس"
+        live = live if isinstance(live, dict) else None
+        is_live = live is not None
 
+        if is_live:
+            used = (live.get("up") or 0) + (live.get("down") or 0)
+            total = live.get("total") or 0
+            expire_ms = live.get("expiryTime") or 0
+            enable = live.get("enable", True)
+        else:
+            used = None
+            total = data_limit_db or 0
+            expire_ms = expire_time_db or 0
+            enable = True  # نمی‌دونیم؛ خوش‌بینانه فرض می‌کنیم فعاله
+
+        status = _status_label(enable, expire_ms, total, used or 0)
+
+        label = "🧪 تست رایگان" if is_trial else "💎 سرویس"
         safe_service_name = html.escape(service_name or "")
         safe_category_name = html.escape(category_name or "")
         safe_email = html.escape(email or "")
 
-        block = f"{label}\n"
+        lines = [label]
         if purchase_id:
-            block += f"🔑 شماره سفارش: #{purchase_id}\n"
-        block += f"📦 نام: {safe_service_name}\n"
+            lines.append(f"🔑 شماره سفارش: #{purchase_id}")
+        lines.append(f"📦 نام: {safe_service_name}")
         if not is_trial:
-            block += f"🗂 دسته‌بندی: {safe_category_name}\n"
-        block += f"📧 ایمیل کلاینت: {safe_email}\n"
-        block += f"📶 حجم کل: {_fmt_total_bytes(data_limit_db)}\n"
+            lines.append(f"🗂 دسته‌بندی: {safe_category_name}")
+        lines.append(f"📧 ایمیل کلاینت: {safe_email}")
+        lines.append(f"وضعیت: {status}")
+
+        if expire_ms and expire_ms > 0:
+            expire_dt = datetime.fromtimestamp(expire_ms / 1000)
+            days_left = (expire_dt - datetime.now()).days
+            days_txt = f"({days_left} روز مانده)" if days_left >= 0 else "(منقضی شده)"
+            lines.append(f"📅 انقضا: {expire_dt.strftime('%Y-%m-%d')} {days_txt}")
+        else:
+            lines.append("📅 انقضا: نامحدود")
+
+        if total and total > 0:
+            used_v = used or 0
+            remaining = max(total - used_v, 0)
+            lines.append(f"📊 حجم: {_fmt_bytes(used_v)} از {_fmt_bytes(total)} مصرف شده")
+            bar = _progress_bar(used_v, total)
+            if bar:
+                lines.append(bar)
+            lines.append(f"📶 باقی‌مانده: {_fmt_bytes(remaining)}")
+        elif used is not None:
+            lines.append(f"📊 حجم مصرفی: {_fmt_bytes(used)} (سقف: ♾ نامحدود)")
+        else:
+            lines.append("📶 حجم: ♾ نامحدود")
+
+        if not is_live:
+            lines.append("⚠️ اتصال لحظه‌ای به پنل برقرار نشد — آخرین اطلاعات ذخیره‌شده نمایش داده شد.")
 
         if sub_url:
             safe_sub_url = html.escape(sub_url)
-            block += f"🔗 لینک سابسکریپشن:\n<code>{safe_sub_url}</code>\n"
+            lines.append(f"🔗 لینک سابسکریپشن:\n<code>{safe_sub_url}</code>")
 
-            separator = "&" if "?" in sub_url else "?"
-            live_status_url = f"{sub_url}{separator}html=1"
-            safe_live_status_url = html.escape(live_status_url, quote=True)
-            block += (
-                f"📡 دیدن لحظه‌ای وضعیت سرویس و حجم باقی‌مانده:\n"
-                f"<a href=\"{safe_live_status_url}\">مشاهده وضعیت زنده</a>\n"
-                f"⚠️ اگه صفحه‌ی وضعیت چیزی نشون نداد، اول فیلترشکن (VPN) گوشی یا سیستمت رو "
-                f"خاموش کن و دوباره امتحان کن. اگه بازم چیزی نمایش داده نشد، یعنی این سرویس "
-                f"به‌خاطر اتمام حجم یا پایان مدت اشتراک از روی پنل حذف شده.\n"
-            )
+        block = "\n".join(lines) + "\n" + sep
 
-        block += f"{sep}\n"
-        blocks.append(block)
+        kb = service_status_renew_kb(purchase_id) if (purchase_id and not is_trial) else None
+        await call.message.answer(block, parse_mode="HTML", reply_markup=kb)
 
-    chunks = chunk_blocks(header, blocks, footer)
-    await call.message.edit_text(chunks[0], parse_mode="HTML")
-    if len(chunks) > 1:
-        await send_chunks(call.message, chunks[1:], parse_mode="HTML")
-    await call.message.answer("👇", reply_markup=home_button_kb())
+        if len(accounts) > 1:
+            await asyncio.sleep(0.05)  # جلوگیری از خوردن به Flood Limit تلگرام
+
+    await call.message.answer(
+        "ℹ️ برای اتصال، لینک سابسکریپشن بالا رو داخل اپلیکیشن VPN خودت وارد کن.",
+        reply_markup=home_button_kb(),
+    )
     await call.answer()
+
 
 
 # ================================================================

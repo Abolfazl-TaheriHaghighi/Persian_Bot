@@ -360,6 +360,21 @@ def init_db():
     """)
     cur.execute("INSERT INTO backup_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
 
+    # ---- تاریخچه‌ی تمدید اشتراک‌ها (هم مسیر کاربر/همکار، هم تمدید دستی ادمین) ----
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS renewals (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            purchase_id INTEGER REFERENCES purchases(id) ON DELETE SET NULL,
+            client_email TEXT,
+            amount_paid INTEGER NOT NULL DEFAULT 0,
+            added_days INTEGER NOT NULL DEFAULT 0,
+            added_bytes BIGINT NOT NULL DEFAULT 0,
+            renewed_by BIGINT,
+            renewed_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -894,6 +909,85 @@ def get_all_purchases():
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+# ================== RENEWALS ==================
+
+def get_renewal_info(purchase_id, user_id=None):
+    """
+    اطلاعات لازم برای تمدید یک خرید: ایمیل کلاینت روی پنل + سرویس *فعلی*ش.
+    قیمت/مدت/حجم عمداً از services (نه purchases قدیمی) خونده می‌شه چون ممکنه
+    ادمین از زمان خرید اولیه قیمت رو عوض کرده باشه — تمدید همیشه با نرخ روز حساب می‌شه.
+    اگه user_id داده بشه، مالکیتِ خرید هم چک می‌شه (مسیر کاربر/همکار)؛ برای
+    مسیر ادمین با دسترسی کامل، user_id=None بده.
+    نکته: برای خریدهای پلن دلخواه (service_id=NULL در purchases، چون قیمت‌شون
+    per-GB/per-day حساب می‌شه نه از جدول services) این تابع نتیجه‌ای برنمی‌گردونه.
+    """
+    conn = connect()
+    cur = conn.cursor()
+    if user_id is not None:
+        cur.execute("""
+            SELECT v.email, s.id, s.name, s.price, s.duration_days, s.data_limit_gb, p.user_id
+            FROM purchases p
+            JOIN vpn_accounts v ON v.purchase_id = p.id
+            JOIN services s ON s.id = p.service_id
+            WHERE p.id = %s AND p.user_id = %s
+        """, (purchase_id, user_id))
+    else:
+        cur.execute("""
+            SELECT v.email, s.id, s.name, s.price, s.duration_days, s.data_limit_gb, p.user_id
+            FROM purchases p
+            JOIN vpn_accounts v ON v.purchase_id = p.id
+            JOIN services s ON s.id = p.service_id
+            WHERE p.id = %s
+        """, (purchase_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+
+def apply_renewal_after_panel_success(target_user_id, purchase_id, amount, add_days, add_bytes, renewed_by=None):
+    """
+    فقط بعد از موفقیت bulkAdjust روی پنل صدا زده بشه. کسر موجودی و آپدیت
+    expire_time/data_limit محلی رو در یک تراکنش اتمیک انجام می‌ده — اگه موجودی
+    هم‌زمان (race) کافی نبود، هیچ‌کدوم اعمال نمی‌شه (return False).
+    """
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT balance FROM users WHERE telegram_id=%s FOR UPDATE", (target_user_id,))
+    r = cur.fetchone()
+    if not r or r[0] < amount:
+        conn.close()
+        return False
+    cur.execute("UPDATE users SET balance = balance - %s WHERE telegram_id=%s", (amount, target_user_id))
+    cur.execute("""
+        UPDATE vpn_accounts
+        SET expire_time = expire_time + %s,
+            data_limit = data_limit + %s
+        WHERE purchase_id = %s
+    """, (add_days * 86400 * 1000, add_bytes, purchase_id))
+    cur.execute("""
+        INSERT INTO renewals (user_id, purchase_id, amount_paid, added_days, added_bytes, renewed_by)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (target_user_id, purchase_id, amount, add_days, add_bytes, renewed_by or target_user_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def log_manual_renewal(email, added_days, added_bytes, renewed_by):
+    """
+    لاگ تمدید دستیِ ادمین (بدون کسر موجودی و بدون purchase_id مشخص — چون این
+    مسیر با ایمیل خام کار می‌کنه، نه با یک خریدِ ثبت‌شده در دیتابیس).
+    """
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO renewals (user_id, purchase_id, client_email, amount_paid, added_days, added_bytes, renewed_by)
+        VALUES (NULL, NULL, %s, 0, %s, %s, %s)
+    """, (email, added_days, added_bytes, renewed_by))
+    conn.commit()
+    conn.close()
 
 
 # ================== DISCOUNT CODES ==================
@@ -1955,5 +2049,96 @@ def set_brand_name(name: str):
         INSERT INTO bot_settings (key, value) VALUES ('brand_name', %s)
         ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
     """, (name,))
+    conn.commit()
+    conn.close()
+
+
+# ---- قالب‌های پیش‌فرض (دقیقاً همون متن‌های قبلی که hardcode بودن در utils.py) ----
+
+_DEFAULT_WELCOME_TEXT = (
+    "👋 سلام {name} عزیز، به {brand} خوش اومدی! 🥳\n{sep}\n"
+    "🚀 مطمئن‌ترین بستر خرید و مدیریت سرویس VPN بر پایه‌ی V2Ray\n"
+    "🔒 ارتباط کاملاً رمزنگاری‌شده و ضدفیلتر\n\n"
+    "✨ امکانات ربات:\n"
+    "🛒 خرید آنی سرویس از دسته‌بندی‌های متنوع\n"
+    "🎁 دریافت تست رایگان قبل از خرید\n"
+    "🎛 ساخت پلن دلخواه — خودت حجم و مدت رو انتخاب کن\n"
+    "💳 شارژ حساب با چند روش پرداخت\n"
+    "📊 مشاهده‌ی لحظه‌ای وضعیت و حجم باقی‌مانده‌ی هر سرویس\n\n"
+    "🎯 و بیشتر:\n"
+    "👥 دعوت دوستان و دریافت پاداش رفرال\n"
+    "🤝 امکان همکاری و نمایندگی فروش\n"
+    "📋 تاریخچه‌ی کامل خریدها\n"
+    "🎁 کدهای تخفیف برای خریدهای بیشتر\n{sep}\n"
+    "📌 یکی از گزینه‌های زیر رو انتخاب کن:"
+)
+
+_DEFAULT_HOME_TEXT = (
+    "🏠 {brand}\n{sep}\n"
+    "💰 موجودی: {balance} تومان\n{sep}\n"
+    "یکی از گزینه‌های زیر رو انتخاب کن:"
+)
+
+
+def get_welcome_text() -> str:
+    """
+    قالب متن خوش‌آمدگویی /start. Placeholder های پشتیبانی‌شده: {name}, {brand}, {sep}
+    (جایگزینی امنشون توی utils.build_welcome_text انجام می‌شه). اگه ادمین چیزی
+    تنظیم نکرده باشه، قالب پیش‌فرض (همون متن قبلی) برمی‌گرده.
+    """
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM bot_settings WHERE key='welcome_text'")
+    r = cur.fetchone()
+    conn.close()
+    return r[0] if r and r[0] else _DEFAULT_WELCOME_TEXT
+
+
+def set_welcome_text(template: str):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO bot_settings (key, value) VALUES ('welcome_text', %s)
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
+    """, (template,))
+    conn.commit()
+    conn.close()
+
+
+def reset_welcome_text():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM bot_settings WHERE key='welcome_text'")
+    conn.commit()
+    conn.close()
+
+
+def get_home_text() -> str:
+    """
+    قالب متن صفحه‌ی «خانه». Placeholder های پشتیبانی‌شده: {brand}, {balance}, {sep}
+    """
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM bot_settings WHERE key='home_text'")
+    r = cur.fetchone()
+    conn.close()
+    return r[0] if r and r[0] else _DEFAULT_HOME_TEXT
+
+
+def set_home_text(template: str):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO bot_settings (key, value) VALUES ('home_text', %s)
+        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
+    """, (template,))
+    conn.commit()
+    conn.close()
+
+
+def reset_home_text():
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM bot_settings WHERE key='home_text'")
     conn.commit()
     conn.close()

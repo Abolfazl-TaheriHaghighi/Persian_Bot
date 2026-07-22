@@ -132,6 +132,22 @@ async def send_chunks(message, chunks: list, parse_mode: str | None = None):
             await asyncio.sleep(0.05)
 
 
+# ================== SAFE TEMPLATE FORMATTING (متن‌های سفارشی ادمین) ==================
+
+def _safe_format(template: str, **kwargs) -> str:
+    """
+    .format() امن برای قالب‌های متنی سفارشی (خوش‌آمدگویی/صفحه‌ی خانه) که ادمین
+    از پنل وارد می‌کنه. اگه ادمین توی متنش از یک placeholder نامعتبر استفاده
+    کرده باشه (مثلاً {foo} که تعریف نشده) یا آکولاد تنها گذاشته باشه، به‌جای
+    کرش کردن /start یا صفحه‌ی خانه برای *همه‌ی* کاربرها، همون متن خام (بدون
+    جایگزینی placeholder ها) برگردونده می‌شه.
+    """
+    try:
+        return template.format(**kwargs)
+    except (KeyError, IndexError, ValueError):
+        return template
+
+
 # ================== HOME SCREEN (منوی شیشه‌ای اصلی) ==================
 
 async def render_home(target, user_id: int):
@@ -148,17 +164,14 @@ async def render_home(target, user_id: int):
     خیلی قدیمیه)، به‌جاش یک پیام متنی جدید فرستاده می‌شه.
     """
     from aiogram.exceptions import TelegramBadRequest
-    from db import get_balance, get_brand_name
+    from db import get_balance, get_brand_name, get_home_text
     from keyboards import home_menu_kb
 
     bal = await run_db(get_balance, user_id)
     brand_name = await run_db(get_brand_name)
+    template = await run_db(get_home_text)
     sep = "─" * 22
-    text = (
-        f"🏠 {brand_name}\n{sep}\n"
-        f"💰 موجودی: {bal:,} تومان\n{sep}\n"
-        f"یکی از گزینه‌های زیر رو انتخاب کن:"
-    )
+    text = _safe_format(template, brand=brand_name, balance=f"{bal:,}", sep=sep)
     kb = home_menu_kb(user_id)
 
     if isinstance(target, types.CallbackQuery):
@@ -172,30 +185,17 @@ async def render_home(target, user_id: int):
         await target.answer(text, reply_markup=kb)
 
 
-def build_welcome_text(first_name: str, brand_name: str) -> str:
+async def build_welcome_text(first_name: str, brand_name: str) -> str:
     """
-    متن خوش‌آمدگویی شخصی‌سازی‌شده برای /start — فقط قابلیت‌های واقعی همین ربات
-    رو معرفی می‌کنه (نه یک لیست تبلیغاتی از قابلیت‌هایی که وجود ندارن).
+    متن خوش‌آمدگویی /start — از قالب قابل‌ویرایش توسط ادمین (پنل ادمین →
+    شخصی‌سازی متن‌ها) ساخته می‌شه. Placeholder های در دسترس: {name}, {brand}, {sep}
+    اگه ادمین چیزی سفارشی تنظیم نکرده باشه، قالب پیش‌فرض (همون متن قبلی) استفاده می‌شه.
     """
+    from db import get_welcome_text
+    template = await run_db(get_welcome_text)
     safe_name = (first_name or "").strip() or "دوست عزیز"
     sep = "─" * 22
-    return (
-        f"👋 سلام {safe_name} عزیز، به {brand_name} خوش اومدی! 🥳\n{sep}\n"
-        f"🚀 مطمئن‌ترین بستر خرید و مدیریت سرویس VPN بر پایه‌ی V2Ray\n"
-        f"🔒 ارتباط کاملاً رمزنگاری‌شده و ضدفیلتر\n\n"
-        f"✨ امکانات ربات:\n"
-        f"🛒 خرید آنی سرویس از دسته‌بندی‌های متنوع\n"
-        f"🎁 دریافت تست رایگان قبل از خرید\n"
-        f"🎛 ساخت پلن دلخواه — خودت حجم و مدت رو انتخاب کن\n"
-        f"💳 شارژ حساب با چند روش پرداخت\n"
-        f"📊 مشاهده‌ی لحظه‌ای وضعیت و حجم باقی‌مانده‌ی هر سرویس\n\n"
-        f"🎯 و بیشتر:\n"
-        f"👥 دعوت دوستان و دریافت پاداش رفرال\n"
-        f"🤝 امکان همکاری و نمایندگی فروش\n"
-        f"📋 تاریخچه‌ی کامل خریدها\n"
-        f"🎁 کدهای تخفیف برای خریدهای بیشتر\n{sep}\n"
-        f"📌 یکی از گزینه‌های زیر رو انتخاب کن:"
-    )
+    return _safe_format(template, name=safe_name, brand=brand_name, sep=sep)
 
 
 # ================== EDIT-IN-PLACE FSM PROMPTS (کاهش شلوغی چت ادمین) ==================

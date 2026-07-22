@@ -75,7 +75,6 @@ async def admin_license_menu(call: types.CallbackQuery):
             f"⚠️ {result['error'] or 'لایسنس وارد نشده'}\n\n"
             f"در حالت رایگان:\n"
             f"• حداکثر ۱ دسته‌بندی و ۲ سرویس\n"
-            f"• اتصال پنل فقط با یوزر/پس\n"
             f"• بدون رفرال، جوین اجباری، همکاران و..."
         )
 
