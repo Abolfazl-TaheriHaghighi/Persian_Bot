@@ -236,30 +236,23 @@ def init_db():
         CREATE TABLE IF NOT EXISTS panel_config (
             id INTEGER PRIMARY KEY DEFAULT 1,
             panel_url TEXT DEFAULT NULL,
-            auth_type TEXT DEFAULT 'userpass',
+            auth_type TEXT DEFAULT 'apikey',
             username TEXT DEFAULT NULL,
             password TEXT DEFAULT NULL,
             api_key TEXT DEFAULT NULL,
             inbound_id INTEGER DEFAULT NULL,
             panel_path TEXT DEFAULT '',
-            sub_port INTEGER DEFAULT NULL,
+            sub_port INTEGER DEFAULT 2096,
             sub_path TEXT DEFAULT 'sub'
         )
     """)
     cur.execute("INSERT INTO panel_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
-    cur.execute("ALTER TABLE panel_config ADD COLUMN IF NOT EXISTS sub_port INTEGER DEFAULT NULL")
+    cur.execute("ALTER TABLE panel_config ADD COLUMN IF NOT EXISTS sub_port INTEGER DEFAULT 2096")
     cur.execute("ALTER TABLE panel_config ADD COLUMN IF NOT EXISTS sub_path TEXT DEFAULT 'sub'")
-
-    # ---- لایسنس ----
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS license_info (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            license_key TEXT DEFAULT NULL,
-            activated_at TIMESTAMP DEFAULT NULL,
-            last_checked TIMESTAMP DEFAULT NULL
-        )
-    """)
-    cur.execute("INSERT INTO license_info (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+    # روی نصب‌های قبلی که sub_port هنوز NULL مونده (چون ستون قبلاً با پیش‌فرض
+    # NULL ساخته شده بود)، مقدار پیش‌فرض ۲۰۹۶ رو الان اعمال می‌کنیم — طبق
+    # درخواست که پورت لینک ساب از همون اولین اجرا از پیش ۲۰۹۶ باشه.
+    cur.execute("UPDATE panel_config SET sub_port = 2096 WHERE sub_port IS NULL")
 
     # ---- اکانت‌های VPN ساخته‌شده ----
     cur.execute("""
@@ -1376,53 +1369,6 @@ def get_partner_user_ids():
 
 
 # ================== LICENSE ==================
-
-def get_license_key() -> str | None:
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT license_key FROM license_info WHERE id=1")
-    r = cur.fetchone()
-    conn.close()
-    return r[0] if r else None
-
-
-def save_license_key(key: str):
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE license_info
-        SET license_key=%s, activated_at=NOW(), last_checked=NOW()
-        WHERE id=1
-    """, (key,))
-    conn.commit()
-    conn.close()
-
-
-def update_license_checked():
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("UPDATE license_info SET last_checked=NOW() WHERE id=1")
-    conn.commit()
-    conn.close()
-
-
-def get_category_count() -> int:
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM categories WHERE is_active=TRUE")
-    r = cur.fetchone()
-    conn.close()
-    return r[0] if r else 0
-
-
-def get_service_count() -> int:
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM services WHERE is_active=TRUE")
-    r = cur.fetchone()
-    conn.close()
-    return r[0] if r else 0
-
 
 # ================== REQUIRED CHANNELS ==================
 

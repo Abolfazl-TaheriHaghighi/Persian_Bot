@@ -25,9 +25,6 @@ def broadcast_target_kb():
 async def admin_broadcast_start(call: types.CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
         return
-    from pro_guard import require_pro
-    if not await require_pro(call, "ارسال پیام همگانی"):
-        return
     await call.message.edit_text("📣 ارسال پیام گروهی\n\nمخاطبان رو انتخاب کن:", reply_markup=broadcast_target_kb())
     await call.answer()
 

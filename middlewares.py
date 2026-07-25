@@ -9,6 +9,7 @@ from aiogram.types import (
 
 from db import get_active_channels, connect
 from utils import run_db
+from config import is_admin
 
 # این کالبک‌ها همیشه باید رد بشن، حتی اگه کاربر عضو کانال‌ها نباشه یا شماره
 # ثبت‌شده نداشته باشه — وگرنه کاربر توی یه حلقه‌ی بی‌راه‌حل گیر می‌کنه:
@@ -105,6 +106,12 @@ class MembershipAndPhoneMiddleware(BaseMiddleware):
 
         bot = data.get("bot") or event.bot
         user_id = event.from_user.id
+
+        # ادمین از هر دو چک (جوین اجباری + شماره) کاملاً معافه — چون خودِ
+        # ادمین باید همیشه بتونه بدون هیچ مانعی به پنل مدیریتش دسترسی داشته
+        # باشه، حتی اگه یادش رفته باشه توی کانال‌های خودش عضو بشه یا شماره ثبت کنه.
+        if is_admin(user_id):
+            return await handler(event, data)
 
         not_joined = await _check_membership(bot, user_id)
         if not_joined:

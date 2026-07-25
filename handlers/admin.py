@@ -31,9 +31,6 @@ from states import (
     AdminTrialConfig, AdminPhoneOverride, AdminReferralConfig,
     AdminAddChannel, AdminAddPartnerManual, AdminClientNaming, AdminPartnerGroupLabel
 )
-from pro_guard import (
-    require_pro, check_free_category_limit, check_free_service_limit
-)
 from utils import format_data, data_label_short, normalize_phone, run_db, sanitize_naming_prefix, chunk_blocks, start_prompt, finish_prompt
 
 router = Router()
@@ -150,8 +147,6 @@ async def admin_del_cat(call: types.CallbackQuery):
 @router.callback_query(F.data == "admin:add_category")
 async def admin_add_cat_start(call: types.CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
-        return
-    if not await check_free_category_limit(call):
         return
     await state.set_state(AdminAddCategory.name)
     await call.message.answer("🗂 نام دسته‌بندی رو وارد کن:")
@@ -299,6 +294,15 @@ async def admin_save_edit(message: types.Message, state: FSMContext):
             await message.answer("❌ فقط عدد صحیح:")
             return
         value = int(raw)
+        # 🐛 همون باگ حیاتی «مدت = صفر» (توضیح کامل در admin_add_svc_duration) —
+        # اینجا هم باید رد بشه، چون این مسیر (ویرایش سرویس موجود) هم می‌تونه
+        # duration_days رو به 0 تغییر بده و همون فاجعه رو تکرار کنه.
+        if field == "duration" and value <= 0:
+            await message.answer(
+                "❌ مدت باید حداقل ۱ روز باشه.\n"
+                "(عدد صفر رو پنل به‌عنوان «نامحدود برای همیشه» تفسیر می‌کنه — نمی‌تونیم اجازه بدیم.)"
+            )
+            return
     elif field == "data_limit":
         try:
             value = float(raw.replace(",", "."))
@@ -327,8 +331,6 @@ async def admin_save_edit(message: types.Message, state: FSMContext):
 @router.callback_query(F.data == "admin:add_service")
 async def admin_add_service_start(call: types.CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
-        return
-    if not await check_free_service_limit(call):
         return
     cats = await run_db(get_all_categories, active_only=True)
     buttons = [[InlineKeyboardButton(text=f"{c[2]} {c[1]}", callback_data=f"admin:svc_cat:{c[0]}")] for c in cats]
@@ -377,7 +379,19 @@ async def admin_add_svc_duration(message: types.Message, state: FSMContext):
     if not message.text or not message.text.isdigit():
         await message.answer("❌ فقط عدد:")
         return
-    await state.update_data(duration=int(message.text))
+    duration_value = int(message.text)
+    # 🐛 باگ حیاتی که قبلاً وجود داشت: اگه ادمین اینجا عدد 0 وارد می‌کرد، بدون
+    # هیچ هشداری قبول می‌شد. پنل هر زمانی expiryTime=0 دریافت کنه، سرویس رو
+    # "نامحدود برای همیشه" می‌سازه — یعنی هر خریداری از این سرویس یه اکانت
+    # ابدی و رایگان می‌گرفت. برخلاف حجم (که 0=نامحدود یه قابلیت عمدی و مستنده)،
+    # مدت صفر هیچ‌وقت قصد واقعی ادمین نیست، پس اینجا کاملاً رد می‌شه.
+    if duration_value <= 0:
+        await message.answer(
+            "❌ مدت باید حداقل ۱ روز باشه.\n"
+            "(عدد صفر رو پنل به‌عنوان «نامحدود برای همیشه» تفسیر می‌کنه — نمی‌تونیم اجازه بدیم.)"
+        )
+        return
+    await state.update_data(duration=duration_value)
     await state.set_state(AdminAddService.data_limit)
     await message.answer("📶 حجم رو به گیگابایت وارد کن:\n• 0 = نامحدود\n• مثال: 30 یا 30.5 یا 0.1")
 
@@ -409,8 +423,6 @@ async def admin_add_svc_data(message: types.Message, state: FSMContext):
 @router.callback_query(F.data == "admin:discounts")
 async def admin_discounts(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
-        return
-    if not await require_pro(call, "کد تخفیف"):
         return
     codes = await run_db(get_all_discount_codes)
     text = "🎁 کدهای تخفیف:\n(برای حذف روی کد کلیک کن)\n\n"
@@ -788,8 +800,6 @@ async def admin_trial_uses(call: types.CallbackQuery):
 async def admin_referral_menu(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    if not await require_pro(call, "رفرال"):
-        return
     cfg = await run_db(get_referral_config)
     await call.message.edit_text("🔗 تنظیمات سیستم رفرال:", reply_markup=admin_referral_menu_kb(cfg))
     await call.answer()
@@ -901,8 +911,6 @@ def channels_kb(channels):
 async def admin_channels(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    if not await require_pro(call, "جوین اجباری"):
-        return
     channels = await run_db(get_all_channels)
     text = "📢 کانال‌های اجباری:\n✅=فعال | ❌=غیرفعال\n\n"
     if not channels:
@@ -955,25 +963,47 @@ async def admin_ch_add_start(call: types.CallbackQuery, state: FSMContext):
 @router.message(AdminAddChannel.channel_id)
 async def admin_ch_id_input(message: types.Message, state: FSMContext):
     raw = message.text.strip()
+
+    # نرمال‌سازی: تلگرام get_chat هم @username رو قبول می‌کنه هم آیدی عددی
+    # (باید int باشه، نه رشته). اگه رشته‌ی عددی بود (با یا بدون منفی)، به int
+    # تبدیلش می‌کنیم؛ وگرنه همون رشته (یوزرنیم) رو با @ می‌فرستیم.
+    lookup_id = raw
+    if raw.lstrip("-").isdigit():
+        lookup_id = int(raw)
+    elif not raw.startswith("@"):
+        lookup_id = f"@{raw}"
+
     await state.update_data(channel_id=raw)
 
     # سعی می‌کنیم اطلاعات کانال رو از تلگرام بگیریم
     try:
-        chat = await message.bot.get_chat(raw)
+        chat = await message.bot.get_chat(lookup_id)
         await state.update_data(
+            channel_id=chat.id,  # آیدی عددی واقعی رو ذخیره می‌کنیم، نه ورودی خام
             channel_username=chat.username or "",
             channel_title=chat.title or raw
         )
         await state.set_state(AdminAddChannel.invite_link)
         await message.answer(
-            f"✅ کانال پیدا شد: {chat.title}\n\n"
+            f"✅ کانال پیدا شد: {chat.title}\n"
+            f"🆔 آیدی واقعی: {chat.id}\n\n"
             f"لینک دعوت رو وارد کن (اختیاری، برای کانال‌های پرایوت):\n"
             f"یا /skip اگه کانال پابلیکه:"
         )
-    except Exception:
+    except Exception as e:
+        # نکته‌ی مهم: قبلاً دلیل واقعی خطا نشون داده نمی‌شد و فقط یه حدس کلی
+        # («ربات ادمین نیست؟») زده می‌شد — که تشخیص مشکل واقعی رو سخت می‌کرد.
+        # الان متن دقیق خطای تلگرام هم نشون داده می‌شه (مثلاً "chat not found"
+        # یا "bot is not a member") تا معلوم بشه مشکل از چیه.
         await message.answer(
-            "⚠️ نتونستم اطلاعات کانال رو بگیرم (ربات ادمین نیست؟)\n\n"
-            "عنوان کانال رو دستی وارد کن:"
+            f"⚠️ نتونستم اطلاعات کانال رو خودکار بگیرم.\n"
+            f"📄 خطای تلگرام: {e}\n\n"
+            f"دلایل رایج:\n"
+            f"• ربات هنوز عضو/ادمین کانال نشده\n"
+            f"• آیدی/یوزرنیم اشتباه وارد شده (برای کانال پرایوت باید آیدی عددی "
+            f"کامل با فرمت -100xxxxxxxxxx باشه)\n\n"
+            f"می‌تونی همینجا عنوان کانال رو دستی وارد کنی تا بدون اطلاعات "
+            f"خودکار ثبتش کنم (ولی بهتره اول مطمئن شی ربات عضو/ادمین کانال شده):"
         )
         await state.set_state(AdminAddChannel.title)
 
@@ -1024,17 +1054,16 @@ def panel_config_kb(cfg):
     else:
         url, auth_type, username, password, api_key, inbound_id, panel_path = cfg[:7]
         sub_port, sub_path = None, "sub"
-    auth_label = "👤 یوزر/پس" if auth_type == "userpass" else "🔑 API Key"
     connected = "✅" if url else "❌"
+    # نکته: یوزر/پس کاملاً حذف شد — این پنل فقط با API Key وصل می‌شه (چون
+    # لاگین کوکی‌محور روش دیگه کار نمی‌کرد). دکمه‌ی سوییچ روش اتصال و
+    # فیلدهای یوزرنیم/پسورد دیگه اینجا نشون داده نمی‌شن.
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{connected} آدرس پنل: {url or 'تنظیم نشده'}", callback_data="admin:panel_set:panel_url")],
-        [InlineKeyboardButton(text=f"🔐 روش اتصال: {auth_label}", callback_data="admin:panel_toggle_auth")],
-        [InlineKeyboardButton(text=f"👤 یوزرنیم: {username or '—'}", callback_data="admin:panel_set:username")],
-        [InlineKeyboardButton(text=f"🔒 پسورد: {'✅ ست شده' if password else '—'}", callback_data="admin:panel_set:password")],
         [InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data="admin:panel_set:api_key")],
         [InlineKeyboardButton(text=f"📡 Inbound ID: {inbound_id or '—'}", callback_data="admin:panel_set:inbound_id")],
         [InlineKeyboardButton(text=f"📂 Panel Path: {panel_path or '/'}", callback_data="admin:panel_set:panel_path")],
-        [InlineKeyboardButton(text=f"🔌 پورت لینک Sub: {sub_port or 'همان پنل'}", callback_data="admin:panel_set:sub_port")],
+        [InlineKeyboardButton(text=f"🔌 پورت لینک Sub: {sub_port or 2096}", callback_data="admin:panel_set:sub_port")],
         [InlineKeyboardButton(text=f"📎 Sub Path: /{sub_path or 'sub'}", callback_data="admin:panel_set:sub_path")],
         [InlineKeyboardButton(text="📋 لیست Inbound ها", callback_data="admin:panel_inbounds")],
         [InlineKeyboardButton(text="🔌 تست اتصال", callback_data="admin:panel_test")],
@@ -1051,23 +1080,6 @@ async def admin_panel_config(call: types.CallbackQuery):
     await call.answer()
 
 
-@router.callback_query(F.data == "admin:panel_toggle_auth")
-async def admin_panel_toggle_auth(call: types.CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return
-    cfg = await run_db(get_panel_config)
-    new_auth = "apikey" if cfg[1] == "userpass" else "userpass"
-    # نکته: قفل require_pro از این‌جا برداشته شد — API Key دیگه مخصوص پرو
-    # نیست، چون یوزر/پس (لاگین با کوکی) دیگه روی پنل کار نمی‌کنه و API Key
-    # تنها روش قابل‌اعتماد اتصاله؛ باید برای همه (فری/پرو) در دسترس باشه.
-    await run_db(update_panel_config, auth_type=new_auth)
-    from panel import invalidate_panel_cache
-    invalidate_panel_cache()
-    await call.answer("🔑 API Key" if new_auth == "apikey" else "👤 یوزر/پس", show_alert=True)
-    cfg = await run_db(get_panel_config)
-    await call.message.edit_text("⚙️ تنظیمات پنل VPN:", reply_markup=panel_config_kb(cfg))
-
-
 @router.callback_query(F.data.startswith("admin:panel_set:"))
 async def admin_panel_set_field(call: types.CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
@@ -1077,8 +1089,6 @@ async def admin_panel_set_field(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(panel_field=field)
     prompts = {
         "panel_url":   "🌐 آدرس پنل رو وارد کن:\nمثال: https://1.2.3.4:2053",
-        "username":    "👤 یوزرنیم پنل رو وارد کن:",
-        "password":    "🔒 پسورد پنل رو وارد کن:",
         "api_key":     "🔑 API Key پنل رو وارد کن:",
         "inbound_id":  "📡 شماره Inbound ID رو وارد کن (عدد):",
         "panel_path":  "📂 Panel Path رو وارد کن (پیش‌فرض خالی):\nمثال: /panel یا /skip برای خالی:",
@@ -1122,7 +1132,12 @@ async def admin_panel_save_field(message: types.Message, state: FSMContext):
         value = base
         # اگه path داشت، panel_path رو هم آپدیت کن
         if path:
-            await run_db(update_panel_config, panel_path=path)
+            # 🐛 باگ قبلی: اینجا فقط panel_path ذخیره می‌شد و بلافاصله return
+            # می‌زد — یعنی panel_url (همون base، که PanelClient هر درخواستی
+            # رو باهاش می‌سازه) هیچ‌وقت ذخیره نمی‌شد و اتصال پنل عملاً بی‌فایده
+            # می‌موند مگر ادمین یه بار دیگه بدون path دوباره واردش می‌کرد.
+            # الان هر دو مقدار با هم توی یه UPDATE ذخیره می‌شن.
+            await run_db(update_panel_config, panel_url=base, panel_path=path)
             await message.answer(
                 f"✅ آدرس ذخیره شد.\n"
                 f"🌐 Base URL: {base}\n"
@@ -1218,8 +1233,6 @@ def partner_detail_kb(user_id, is_active):
 @router.callback_query(F.data == "admin:partners")
 async def admin_partners(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
-        return
-    if not await require_pro(call, "همکاران"):
         return
     partners = await run_db(get_all_partners)
     active = sum(1 for p in partners if p[4] == "active")
@@ -1951,8 +1964,6 @@ async def admin_custom_plans_menu(call: types.CallbackQuery):
 @router.callback_query(F.data == "admin:custom_cat_add")
 async def admin_custom_cat_add_start(call: types.CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
-        return
-    if not await check_free_category_limit(call):
         return
     await state.set_state(AdminCustomCategory.name)
     await call.message.answer(

@@ -16,10 +16,6 @@ _raw_ids = os.getenv("ADMIN_IDS", os.getenv("ADMIN_ID", ""))
 ADMIN_IDS = [int(x.strip()) for x in _raw_ids.split(",") if x.strip().isdigit()]
 ADMIN_ID = ADMIN_IDS[0] if ADMIN_IDS else 0
 
-# لایسنس
-MASTER_KEY = os.getenv("MASTER_KEY", "")
-LICENSE_SIGN_KEY = os.getenv("LICENSE_SIGN_KEY", "default-sign-key-change-this")
-
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS

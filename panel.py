@@ -23,17 +23,15 @@ _BODY_PREVIEW_LEN = 200
 
 class PanelClient:
     def __init__(self, cfg: tuple):
+        # نکته: یوزر/پس کاملاً حذف شد — این پنل همیشه با API Key وصل می‌شه.
         self.base_url = cfg[0].rstrip("/")
         self.auth_type = cfg[1]
-        self.username = cfg[2]
-        self.password = cfg[3]
         self.api_key = cfg[4]
         self.inbound_id = cfg[5]
         self.panel_path = cfg[6] or ""
         # sub_port و sub_path برای ساخت لینک subscription
         self.sub_port = cfg[7] if len(cfg) > 7 and cfg[7] else None
         self.sub_path = cfg[8] if len(cfg) > 8 and cfg[8] else "sub"
-        self.session_cookie = None
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{self.panel_path}{path}"
@@ -48,59 +46,15 @@ class PanelClient:
         return f"{sub_base}/{self.sub_path}/{sub_id}"
 
     def _headers(self) -> dict:
-        if self.auth_type == "apikey":
-            return {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "accept": "application/json",
-            }
-        return {"Content-Type": "application/json", "accept": "application/json"}
-
-    async def login(self) -> bool:
-        if self.auth_type == "apikey":
-            return True
-        try:
-            async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
-                # این پنل بدنه‌ی JSON (نه form-data) می‌خواد و فیلد twoFactorCode هم لازم داره
-                # (حتی اگه 2FA غیرفعال باشه، رشته‌ی خالی می‌فرستیم)
-                resp = await session.post(
-                    self._url("/login"),
-                    json={
-                        "username": self.username,
-                        "password": self.password,
-                        "twoFactorCode": "",
-                    },
-                    headers={"accept": "application/json"},
-                    ssl=False
-                )
-                try:
-                    data = await resp.json()
-                except aiohttp.ContentTypeError:
-                    body_preview = (await resp.text())[:_BODY_PREVIEW_LEN]
-                    logger.warning(
-                        f"Panel login non-JSON response "
-                        f"(status={resp.status}, content-type={resp.content_type!r}): {body_preview!r}"
-                    )
-                    return False
-
-                if data.get("success"):
-                    self.session_cookie = resp.cookies
-                    return True
-                logger.warning(f"Panel login rejected by server: {data.get('msg', 'no message')}")
-                return False
-        except asyncio.TimeoutError:
-            logger.warning(f"Panel login timed out: {self._url('/login')}")
-            return False
-        except aiohttp.ClientError as e:
-            logger.warning(f"Panel login connection error: {e}")
-            return False
-        except Exception as e:
-            logger.warning(f"Panel login unexpected error: {e}")
-            return False
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "accept": "application/json",
+        }
 
     async def _get(self, path: str) -> dict | None:
         try:
-            async with aiohttp.ClientSession(cookies=self.session_cookie, timeout=_REQUEST_TIMEOUT) as session:
+            async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
                 resp = await session.get(
                     self._url(path), headers=self._headers(), ssl=False
                 )
@@ -125,7 +79,7 @@ class PanelClient:
 
     async def _post(self, path: str, payload: dict) -> dict | None:
         try:
-            async with aiohttp.ClientSession(cookies=self.session_cookie, timeout=_REQUEST_TIMEOUT) as session:
+            async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
                 resp = await session.post(
                     self._url(path), headers=self._headers(), json=payload, ssl=False
                 )
@@ -162,6 +116,21 @@ class PanelClient:
         self, email: str, duration_days: int, data_limit_gb: float,
         inbound_ids: list | None = None,
     ) -> dict | None:
+        # 🐛 لایه‌ی دفاعی نهایی برای یه باگ واقعی و خطرناک که رخ داده بود:
+        # اگه duration_days به هر دلیلی (فرم ادمین، دیتای دستکاری‌شده، باگ
+        # آینده‌ی هرجای دیگه‌ی کد) صفر یا منفی به اینجا برسه، هرگز نباید به
+        # پنل فرستاده بشه — چون این پنل expiryTime=0 رو "نامحدود برای همیشه"
+        # می‌سازه. برخلاف data_limit_gb=0 (که "حجم نامحدود" یه قابلیت عمدیه)،
+        # duration_days=0 هیچ‌وقت یه قصد معتبر نیست. این چک مستقل از هر
+        # اعتبارسنجی بالادستیه، تا این کلاس باگ دیگه از هیچ مسیری تکرار نشه.
+        if duration_days <= 0:
+            logger.error(
+                f"add_client BLOCKED: duration_days={duration_days!r} for email={email!r} — "
+                f"refusing to create a client with zero/negative duration (panel treats "
+                f"expiryTime<=0 as UNLIMITED FOREVER). Check the caller for a data bug."
+            )
+            return None
+
         sub_id = uuid_lib.uuid4().hex[:16]
         expire_ms = int((time.time() + duration_days * 86400) * 1000)
         data_limit_bytes = int(data_limit_gb * 1024 ** 3) if data_limit_gb > 0 else 0
@@ -319,6 +288,10 @@ class _ClientCache:
         self._logged_in_at = None
 
     async def get(self) -> PanelClient | None:
+        # نکته: یوزر/پس کاملاً حذف شد — این پنل همیشه با API Key وصل می‌شه
+        # (لاگین کوکی‌محور دیگه پشتیبانی نمی‌شه، چون روی این پنل کار نمی‌کرد).
+        # پس دیگه نیازی به مرحله‌ی login() نیست؛ API Key توی هدر هر
+        # درخواست فرستاده می‌شه (رجوع به PanelClient._headers).
         async with self._lock:
             if self._is_valid():
                 return self._client
@@ -329,20 +302,6 @@ class _ClientCache:
                 return None
 
             client = PanelClient(cfg)
-
-            if client.auth_type == "apikey":
-                # API Key دیگه مخصوص پرو نیست — چون اتصال یوزر/پس (لاگین با
-                # کوکی) دیگه اصلاً کار نمی‌کنه، API Key تنها روش قابل‌اعتماد
-                # اتصال به پنله و باید برای همه (فری/پرو) در دسترس باشه.
-                self._client = client
-                self._logged_in_at = datetime.now()
-                return self._client
-
-            ok = await client.login()
-            if not ok:
-                self._client = None
-                return None
-
             self._client = client
             self._logged_in_at = datetime.now()
             return self._client
@@ -376,14 +335,6 @@ async def create_vpn_account(
 
     result = await client.add_client(email, duration_days, data_limit_gb)
 
-    # برای apikey، دوباره لاگین کردن هیچ فرقی نمی‌کنه (سشنی برای رفرش شدن وجود ندارد)
-    # پس فقط برای userpass دوباره تلاش می‌کنیم (شاید سشن منقضی شده باشه)
-    if result is None and client.auth_type != "apikey":
-        _cache.invalidate()
-        client = await _get_client()
-        if client:
-            result = await client.add_client(email, duration_days, data_limit_gb)
-
     if result and group:
         ok = await client.set_client_group(email, group)
         if not ok:
@@ -393,26 +344,19 @@ async def create_vpn_account(
 
 
 async def renew_vpn_account(email: str, add_days: int = 0, add_bytes: int = 0) -> bool:
-    """تمدید (افزایش مدت/حجم) یک کلاینت — با retry روی سشن منقضی برای userpass"""
+    """تمدید (افزایش مدت/حجم) یک کلاینت"""
     client = await _get_client()
     if not client:
         return False
 
     result = await client.renew_client(email, add_days, add_bytes)
-
-    if result is None and client.auth_type != "apikey":
-        _cache.invalidate()
-        client = await _get_client()
-        if client:
-            result = await client.renew_client(email, add_days, add_bytes)
-
     return bool(result and result.get("success"))
 
 
 async def set_client_enable(email: str, enable: bool) -> bool:
     """
-    فعال/غیرفعال کردن یک کلاینت روی پنل — با retry روی سشن منقضی برای userpass.
-    توضیح کامل ریسک‌ها/روش کار در PanelClient.set_client_enable هست.
+    فعال/غیرفعال کردن یک کلاینت روی پنل. توضیح کامل ریسک‌ها/روش کار در
+    PanelClient.set_client_enable هست.
     """
     client = await _get_client()
     if not client:
@@ -420,13 +364,6 @@ async def set_client_enable(email: str, enable: bool) -> bool:
         return False
 
     result = await client.set_client_enable(email, enable)
-
-    if not result and client.auth_type != "apikey":
-        _cache.invalidate()
-        client = await _get_client()
-        if client:
-            result = await client.set_client_enable(email, enable)
-
     return bool(result)
 
 
@@ -435,15 +372,7 @@ async def get_client_status(email: str) -> dict | None:
     if not client:
         return None
 
-    result = await client.get_client_stat(email)
-
-    if result is None and client.auth_type != "apikey":
-        _cache.invalidate()
-        client = await _get_client()
-        if client:
-            result = await client.get_client_stat(email)
-
-    return result
+    return await client.get_client_stat(email)
 
 
 async def test_panel_connection() -> tuple[bool, str]:
@@ -453,19 +382,8 @@ async def test_panel_connection() -> tuple[bool, str]:
 
     client = PanelClient(cfg)
 
-    if client.auth_type == "userpass":
-        ok = await client.login()
-        if not ok:
-            return False, (
-                f"❌ لاگین با یوزر/پس ناموفق\n"
-                f"🌐 URL: {client.base_url}{client.panel_path}/login\n\n"
-                f"⚠️ روش اتصال یوزر/پس روی این نسخه از پنل پشتیبانی نمی‌شه.\n"
-                f"از منوی «⚙️ تنظیمات پنل VPN» روش اتصال رو به «🔑 API Key» "
-                f"تغییر بده و کلید API رو از پنل بگیر و وارد کن."
-            )
-    elif client.auth_type == "apikey":
-        if not client.api_key:
-            return False, "❌ API Key وارد نشده"
+    if not client.api_key:
+        return False, "❌ API Key وارد نشده"
 
     inbounds = await client.get_inbounds()
     _cache.invalidate()
