@@ -11,10 +11,6 @@ from db import get_active_channels, connect
 from utils import run_db
 from config import is_admin
 
-# این کالبک‌ها همیشه باید رد بشن، حتی اگه کاربر عضو کانال‌ها نباشه یا شماره
-# ثبت‌شده نداشته باشه — وگرنه کاربر توی یه حلقه‌ی بی‌راه‌حل گیر می‌کنه:
-# - check_membership: همون دکمه‌ای که بعد از جوین شدن برای بررسی مجدد می‌زنه
-# - cancel:fsm: راه فرار از وسط هر فلوی چندمرحله‌ای؛ نباید خودش هم گیت شه
 _EXEMPT_CALLBACKS = {"check_membership", "cancel:fsm"}
 
 
@@ -28,11 +24,6 @@ def _user_has_phone(user_id) -> bool:
 
 
 async def _check_membership(bot, user_id: int) -> list:
-    """
-    دقیقاً همون منطق check_membership در handlers/user.py — اینجا مستقل
-    تعریف شده (نه import شده) تا میدل‌ور به هیچ هندلری وابسته نباشه و در
-    صورت تغییر ساختار handlers در آینده نشکنه.
-    """
     channels = await run_db(get_active_channels)
     not_joined = []
     for ch in channels:
