@@ -220,29 +220,54 @@ class PanelClient:
 
     async def set_client_enable(self, email: str, enable: bool) -> bool:
         """
-        فعال/غیرفعال کردن یک کلاینت — طبق API واقعیِ تأییدشده‌ی این پنل:
-            GET  /panel/api/clients/get/{email}     → کل رکورد کلاینت
-            POST /panel/api/clients/update/{email}  → جایگزینی کل رکورد
+        فعال/غیرفعال کردن یک کلاینت.
 
-        این endpoint مثل PATCH نیست؛ کل رکورد رو جایگزین می‌کنه، نه فقط فیلد
-        enable رو. برای همین اول رکورد کامل فعلی خونده می‌شه (get_client_config)،
-        فقط enable توش عوض می‌شه، و همون آبجکت کامل (با همون totalGB, expiryTime,
-        tgId و بقیه‌ی فیلدها) دوباره فرستاده می‌شه — طبق داکیومنت رسمی پنل که
-        صراحتاً نوشته: «the server replaces the row, it does not patch».
+        🐛 باگ واقعی که اینجا رخ داده بود و حالا رفع شده: نسخه‌ی قبلی این
+        تابع، رکورد فعلی کلاینت رو از GET /panel/api/clients/get/{email}
+        می‌خوند و همون آبجکت (فقط با enable عوض‌شده) رو به‌عنوان بدنه‌ی
+        POST /panel/api/clients/update/{email} می‌فرستاد. مشکل این بود که
+        ساختار/نام فیلدهای برگشتی GET هیچ‌وقت واقعاً تأیید نشده بود و ظاهراً
+        با چیزی که update انتظار داره (totalGB, expiryTime) یکی نبود —
+        نتیجه این می‌شد که این دو فیلد یا اصلاً به update نمی‌رسیدن یا با
+        نام اشتباه می‌رسیدن، و پنل مقادیر گم‌شده رو با پیش‌فرض 0 پر می‌کرد.
+        چون این پنل 0 رو «نامحدود» تفسیر می‌کنه، هر بار روشن/خاموش کردن
+        یک سرویس، کل مدت و حجمش رو نامحدود می‌کرد.
+
+        رفع قطعی: به‌جای GET /clients/get (که ساختارش تأیید نشده)، از
+        GET /clients/traffic/{email} استفاده می‌شه — همون endpoint ترافیکی
+        که ساختارش قبلاً کامل تأیید شده (up, down, total, expiryTime,
+        enable) و همه‌جای دیگه‌ی پروژه هم روش تکیه شده. payload آپدیت هم
+        دستی و دقیقاً با نام فیلدهایی که خودِ endpoint آپدیت مستند کرده
+        (email, totalGB, expiryTime, tgId, enable) ساخته می‌شه.
         """
-        config = await self.get_client_config(email)
-        if not config:
-            logger.warning(f"set_client_enable: could not fetch current config for email={email!r}")
+        stat = await self.get_client_stat(email)
+        if not stat:
+            logger.warning(f"set_client_enable: could not fetch current traffic/stat for email={email!r}")
             return False
 
-        config["enable"] = enable
-        # نکته‌ی مهم (پیدا شده از لاگ واقعی): آبجکتی که GET برمی‌گردونه فیلد
-        # email رو توش نداره (چون از مسیر URL قابل استنتاجه)، ولی خودِ
-        # endpoint آپدیت صراحتاً email رو هم توی بدنه لازم داره وگرنه با پیام
-        # "client email is required" رد می‌کنه. برای همین صریح ست می‌شه.
-        config["email"] = email
+        current_expiry = stat.get("expiryTime") or 0
+        # لایه‌ی ایمنی حیاتی: اگه expiryTime واقعیِ فعلی صفر/نامعتبر برگرده،
+        # اصلاً toggle نکن — چون فرستادن همین صفر دقیقاً همون چیزیه که باعث
+        # نامحدود شدن سرویس می‌شه. بهتره عملیات fail بشه تا این‌که این ریسک
+        # دوباره تکرار بشه.
+        if current_expiry <= 0:
+            logger.error(
+                f"set_client_enable BLOCKED: traffic endpoint returned invalid/zero "
+                f"expiryTime={current_expiry!r} for email={email!r} — refusing to send "
+                f"an update that could reset this client to UNLIMITED forever."
+            )
+            return False
+
+        payload = {
+            "email": email,
+            "totalGB": stat.get("total") or 0,
+            "expiryTime": current_expiry,
+            "tgId": 0,
+            "enable": enable,
+        }
+
         safe_email = quote(email, safe="")
-        data = await self._post(f"/panel/api/clients/update/{safe_email}", config)
+        data = await self._post(f"/panel/api/clients/update/{safe_email}", payload)
         if not data or not data.get("success"):
             logger.warning(
                 f"set_client_enable: update failed for email={email!r} — "
@@ -250,23 +275,6 @@ class PanelClient:
             )
             return False
         return True
-
-    async def get_client_config(self, email: str) -> dict | None:
-        """
-        رکورد کامل تنظیمات یک کلاینت (email, totalGB, expiryTime, tgId,
-        enable, ...) از GET /panel/api/clients/get/{email} — لازم قبل از هر
-        set_client_enable، چون update کل رکورد رو جایگزین می‌کنه نه patch.
-        """
-        safe_email = quote(email, safe="")
-        data = await self._get(f"/panel/api/clients/get/{safe_email}")
-        if data and data.get("success"):
-            return data.get("obj")
-        # نکته: اگه پاسخ یک JSON معتبر با success=false باشه (نه یک خطای
-        # HTTP/غیر-JSON)، _get هیچ warning ای لاگ نمی‌کنه چون از دیدش درخواست
-        # "موفق" بوده. برای همین اینجا جدا لاگ می‌کنیم تا دلیل واقعی fail شدن
-        # (endpoint وجود نداره؟ ایمیل اشتباهه؟ ...) توی لاگ سرور معلوم بشه.
-        logger.warning(f"get_client_config: unsuccessful response for email={email!r} — response={data!r}")
-        return None
 
 
 

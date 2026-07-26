@@ -341,7 +341,7 @@ async def _render_service_detail(call: types.CallbackQuery, account_id: int) -> 
 
     sep = "─" * 22
     lines = [f"وضعیت سرویس : {status}", sep]
-    lines.append(f"🗂 لوکیشن : {html.escape(service_name or '')}")
+    lines.append(f"🗂 نام سرویس : {html.escape(service_name or '')}")
     code = purchase_id if purchase_id else account_id
     lines.append(f"🔑 کد سرویس: {code}")
     lines.append(f"📧 ایمیل: {html.escape(email or '')}")

@@ -29,7 +29,3 @@ env/
 # OS
 .DS_Store
 Thumbs.db
-
-
-# فایل ساخت لایسنس — فقط برای خودت، به مشتری نده
-generate_license.py
