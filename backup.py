@@ -14,22 +14,17 @@ from utils import run_db
 
 logger = logging.getLogger(__name__)
 
-# پوشه‌ی بکاپ کنار خودِ این فایل باشه — مستقل از اینکه ربات از کجا اجرا شده
+
 _BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups")
 
-# محدودیت واقعی تلگرام برای ارسال فایل توسط بات‌ها (Bot API)
+
 _TELEGRAM_MAX_FILE_BYTES = 50 * 1024 * 1024
 
-# هر چند ثانیه یک‌بار حلقه‌ی بکاپ خودکار چک کنه که وقتشه یا نه
 _AUTO_CHECK_INTERVAL_SECONDS = 3600
 
 
 async def create_db_dump() -> str:
-    """
-    گرفتن بکاپ کامل دیتابیس با pg_dump به‌صورت async (بدون بلاک کردن event loop)
-    و فشرده‌سازی خروجی با gzip. مسیر فایل نهایی (.sql.gz) رو برمی‌گردونه.
-    در صورت خطا، Exception با پیام واضح پرتاب می‌شه.
-    """
+
     if shutil.which("pg_dump") is None:
         raise RuntimeError(
             "دستور pg_dump روی این سرور پیدا نشد. با "
@@ -41,9 +36,7 @@ async def create_db_dump() -> str:
     sql_path = os.path.join(_BACKUP_DIR, f"backup_{timestamp}.sql")
     gz_path = f"{sql_path}.gz"
 
-    # نکته‌ی امنیتی مهم: پسورد دیتابیس از طریق متغیر محیطی PGPASSWORD داده می‌شه،
-    # نه به‌عنوان آرگومان خط فرمان — چون آرگومان‌های subprocess با دستوراتی مثل
-    # 'ps aux' روی سرور قابل مشاهده‌ست و پسورد لو می‌ره.
+
     env = os.environ.copy()
     env["PGPASSWORD"] = DB_PASSWORD or ""
 
@@ -53,7 +46,7 @@ async def create_db_dump() -> str:
         "-p", str(DB_PORT),
         "-U", DB_USER,
         "-d", DB_NAME,
-        "-F", "p",  # plain SQL — ساده‌ترین فرمت برای ری‌استور با psql
+        "-F", "p",  
         "-f", sql_path,
     ]
 
@@ -76,19 +69,13 @@ async def create_db_dump() -> str:
             shutil.copyfileobj(f_in, f_out)
         os.remove(sql_path)
 
-    # فشرده‌سازی فایل بزرگ می‌تونه چند لحظه CPU رو درگیر کنه — از run_db (thread
-    # جدا) استفاده می‌کنیم تا event loop اصلی معطل نمونه
     await run_db(_compress_and_cleanup)
 
     return gz_path
 
 
 async def send_backup_now(bot_token: str, admin_id: int) -> tuple[bool, str]:
-    """
-    یک بکاپ کامل می‌گیره و با یک نمونه‌ی موقت از Bot (با توکن جداگانه‌ی بکاپ)
-    برای admin_id ارسال می‌کنه. فایل محلی در هر صورت (موفق یا ناموفق) پاک می‌شه
-    تا دیتای حساس روی دیسک سرور باقی نمونه.
-    """
+
     dump_path = None
     try:
         dump_path = await create_db_dump()
@@ -134,10 +121,7 @@ async def send_backup_now(bot_token: str, admin_id: int) -> tuple[bool, str]:
 
 
 async def auto_backup_loop():
-    """
-    هر ساعت چک می‌کنه که آیا بکاپ خودکار فعاله و آیا زمانش رسیده یا نه.
-    این‌طوری اگه ادمین بازه‌ی زمانی رو از پنل عوض کنه، نیازی به ری‌استارت بات نیست.
-    """
+
     while True:
         try:
             cfg = await run_db(get_backup_config)
