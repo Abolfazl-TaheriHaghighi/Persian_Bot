@@ -1,5 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import ADMIN_ID, is_admin
+from utils import data_label_short
 
 
 def home_menu_kb(user_id) -> InlineKeyboardMarkup:
@@ -100,7 +101,6 @@ def custom_groups_kb(groups, cat_id):
 
 
 def services_kb(services, cat_id):
-    from utils import data_label_short
     buttons = []
     for s in services:
         sid, name, desc, price, days, data_gb = s
@@ -129,16 +129,26 @@ def admin_categories_kb(categories):
     for c in categories:
         cid, name, emoji, is_active, sort_order, is_custom = c
         st = "✅" if is_active else "❌"
+        # به جای دکمه‌ی حذف مستقیم، کاربر را به صفحه‌ی جزئیات دسته‌بندی هدایت می‌کنیم
         buttons.append([
-            InlineKeyboardButton(text=f"{st} {emoji} {name}", callback_data=f"admin:toggle_cat:{cid}"),
-            InlineKeyboardButton(text="🗑", callback_data=f"admin:del_cat:{cid}"),
+            InlineKeyboardButton(text=f"{st} {emoji} {name}", callback_data=f"admin:cat_detail:{cid}")
         ])
+    buttons.append([InlineKeyboardButton(text="➕ افزودن دسته جدید", callback_data="admin:add_category")])
     buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def admin_cat_detail_kb(cat_id, is_active):
+    toggle_text = "❌ غیرفعال کردن" if is_active else "✅ فعال کردن"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ تغییر نام", callback_data=f"admin:edit_cat:{cat_id}:name"),
+         InlineKeyboardButton(text="🖥 تغییر پنل", callback_data=f"admin:edit_cat:{cat_id}:panel")],
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"admin:toggle_cat:{cat_id}"),
+         InlineKeyboardButton(text="🗑 حذف دسته", callback_data=f"admin:del_cat:{cat_id}")],
+        [InlineKeyboardButton(text="🔙 برگشت به لیست دسته‌ها", callback_data="admin:categories")],
+    ])
+
 
 def admin_services_kb(services):
-    from utils import data_label_short
     buttons = []
     for s in services:
         sid, name, desc, price, days, data_gb, is_active, cat_name, cat_id = s
@@ -190,7 +200,6 @@ def admin_discounts_kb(codes):
 
 
 def admin_trial_menu_kb(cfg):
-    from utils import data_label_short
     is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses = cfg
     status = "✅ فعال" if is_enabled else "❌ غیرفعال"
     ref_req = "✅ بله" if require_referral else "❌ خیر"

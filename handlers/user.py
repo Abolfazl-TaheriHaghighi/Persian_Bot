@@ -80,8 +80,6 @@ async def start(message: types.Message, state: FSMContext):
 
     await run_db(add_user, message.from_user.id, referred_by)
 
-    # اگه از قبل کیبورد ثابت (نسخه‌ی قدیمی ربات) روی گوشی کاربر مونده باشه، این
-    # پیام موقت اونو حذف می‌کنه — از این به بعد فقط دکمه‌های شیشه‌ای استفاده می‌شن
     await message.answer("👋", reply_markup=types.ReplyKeyboardRemove())
 
     not_joined = await check_membership(message.bot, message.from_user.id)
@@ -141,19 +139,13 @@ async def menu_home(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "cancel:fsm")
 async def cancel_fsm(call: types.CallbackQuery, state: FSMContext):
-    """
-    دکمه‌ی انصراف عمومی — برای وسط هر فلوی چندمرحله‌ای (FSM) که کاربر بخواد
-    بی‌خیال بشه (مثلاً وسط شارژ حساب). state رو پاک می‌کنه و برمی‌گرده خانه.
-    """
     await state.clear()
     await render_home(call, call.from_user.id)
 
 
 # ================================================================
-# PROFILE (ترکیب موجودی + خریدها + اطلاعات کاربر در یک صفحه)
+# PROFILE
 # ================================================================
-# این هندلر جایگزین «💰 موجودی من» و «📋 خریدهای من» روی صفحه‌ی خانه شده.
-# «📋 خریدهای من» از دکمه‌ی داخل همین صفحه (menu:purchases) در دسترسه.
 
 @router.callback_query(F.data == "menu:profile")
 async def menu_profile(call: types.CallbackQuery):
@@ -188,18 +180,6 @@ async def menu_profile(call: types.CallbackQuery):
 # ================================================================
 # SERVICE STATUS
 # ================================================================
-# این بخش برخلاف قبل، برای هر سرویس با get_client_status وضعیت لحظه‌ای رو
-# مستقیم از پنل می‌گیره (حجم مصرفی/کل، تاریخ انقضا، فعال/غیرفعال بودن روی
-# پنل). همه‌ی درخواست‌ها موازی (asyncio.gather) زده می‌شن تا با چند سرویس هم
-# صفحه کند نشه. اگه پنل جواب نداد (قطعی/تایم‌اوت)، به‌جای کرش، همون سرویس با
-# آخرین اطلاعات ذخیره‌شده در دیتابیس + یک هشدار کوچیک نمایش داده می‌شه.
-#
-# نکته: sub_url همیشه از دیتابیس خودمون میاد چون endpoint ترافیک پنل اصلاً
-# subId رو برنمی‌گردونه (حتی خودِ پنل هم اونو جایی ذخیره نمی‌کنه، فقط لحظه‌ی
-# ساخت اکانت تولید می‌شه) — این تنها منبع ممکن برای لینک ساب‌ه.
-#
-# دکمه‌ی تمدید فقط وقتی نشون داده می‌شه که purchase_id داشته باشیم (نه تست
-# رایگان) — تمدید پلن‌های دلخواه (بدون service_id ثابت) فعلاً پشتیبانی نمی‌شه.
 
 def _fmt_bytes(b) -> str:
     if b is None:
@@ -236,7 +216,6 @@ def _status_label(enable: bool, expire_ms: int, total: int, used: int) -> str:
 
 
 def _status_dot(enable: bool, expire_ms: int, total: int, used: int) -> str:
-    """فقط ایموجی وضعیت (بدون متن) — برای دکمه‌های لیست سرویس‌ها که جا کمتری دارن"""
     now_ms = time.time() * 1000
     if not enable:
         return "🔴"
@@ -249,13 +228,6 @@ def _status_dot(enable: bool, expire_ms: int, total: int, used: int) -> str:
 
 @router.callback_query(F.data == "menu:status")
 async def menu_status(call: types.CallbackQuery):
-    """
-    به‌جای دامپ کامل هر سرویس، یه لیست دکمه‌ای می‌سازه — هر دکمه ایمیل یه
-    سرویسه (پیام کاربر: «روی سرویس ایمیل کاربر نوشته شده باشه»)، با تپ روی
-    هرکدوم وارد صفحه‌ی جزئیات/مدیریت همون سرویس می‌شه.
-    سرویس‌هایی که دیگه روی پنل اصلی پیدا نشن (حذف شده) اصلاً توی این لیست
-    نشون داده نمی‌شن — طبق درخواست کاربر.
-    """
     from db import get_user_vpn_accounts
     from panel import get_client_status
 
@@ -267,19 +239,20 @@ async def menu_status(call: types.CallbackQuery):
 
     await call.message.edit_text("⏳ در حال بررسی سرویس‌های شما روی سرور...")
 
+    # دریافت وضعیت سرور هر کلاینت با panel_id صحیح
     live_results = await asyncio.gather(
-        *[get_client_status(acc[1]) for acc in accounts],  # acc[1] == email
+        *[get_client_status(acc[1], panel_id=acc[13] if len(acc)>13 and acc[13] else 1) for acc in accounts],
         return_exceptions=True,
     )
 
     buttons = []
     for acc, live in zip(accounts, live_results):
-        (account_id, email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db,
-         created_at, is_trial, service_name, category_name, purchase_id, note) = acc
-
+        # با آپدیت جدید، طول اطلاعات برگشتی 14 مورد است
+        account_id = acc[0]
+        email = acc[1]
+        
         live = live if isinstance(live, dict) else None
         if live is None:
-            # روی سرور اصلی پیدا نشد (حذف شده) — طبق درخواست کاربر، نشونش نمی‌دیم
             continue
 
         enable = live.get("enable", True)
@@ -309,11 +282,6 @@ async def menu_status(call: types.CallbackQuery):
 
 
 async def _render_service_detail(call: types.CallbackQuery, account_id: int) -> bool:
-    """
-    رندر صفحه‌ی جزئیات/مدیریت یک سرویس (وضعیت، حجم، انقضا، یادداشت + دکمه‌های
-    تمدید/روشن‌خاموش/یادداشت/لینک). هم از svcdetail و هم بعد از svctoggle صدا
-    زده می‌شه تا صفحه با آخرین وضعیت رندر شه. True برمی‌گردونه اگه موفق بود.
-    """
     from db import get_vpn_account
     from panel import get_client_status
 
@@ -322,10 +290,11 @@ async def _render_service_detail(call: types.CallbackQuery, account_id: int) -> 
         await call.message.edit_text("این سرویس پیدا نشد یا مال شما نیست.", reply_markup=home_button_kb())
         return False
 
-    (account_id, email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db,
-     created_at, is_trial, service_name, category_name, purchase_id, note, owner_id) = acc
+    # آپدیت: 15 فیلد برمی‌گردد
+    account_id, email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db, \
+    created_at, is_trial, service_name, category_name, purchase_id, note, owner_id, panel_id = acc
 
-    live = await get_client_status(email)
+    live = await get_client_status(email, panel_id=panel_id or 1)
     if live is None:
         await call.message.edit_text(
             "⚠️ این سرویس دیگه روی سرور اصلی پیدا نشد (احتمالاً حذف شده).",
@@ -404,10 +373,6 @@ async def svc_detail(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("svctoggle:"))
 async def svc_toggle(call: types.CallbackQuery):
-    """
-    روشن/خاموش کردن واقعی کلاینت روی سرور اصلی (نه فقط توی دیتابیس خودمون).
-    توضیح کامل نحوه‌ی کار و ریسک‌هاش توی panel.py (PanelClient.set_client_enable) هست.
-    """
     from db import get_vpn_account
     from panel import set_client_enable
 
@@ -420,8 +385,9 @@ async def svc_toggle(call: types.CallbackQuery):
         await call.answer("این سرویس پیدا نشد یا مال شما نیست.", show_alert=True)
         return
     email = acc[1]
+    panel_id = acc[14] if acc[14] else 1
 
-    ok = await set_client_enable(email, new_enable)
+    ok = await set_client_enable(email, new_enable, panel_id=panel_id)
     if not ok:
         await call.answer("❌ تغییر وضعیت روی سرور ناموفق بود. دوباره تلاش کن.", show_alert=True)
         return
@@ -487,7 +453,6 @@ async def svc_note_save(message: types.Message, state: FSMContext):
     await message.answer("✅ یادداشت ذخیره شد.", reply_markup=home_button_kb())
 
 
-
 # ================================================================
 # PURCHASE HISTORY
 # ================================================================
@@ -525,7 +490,7 @@ async def menu_purchases(call: types.CallbackQuery):
 
 
 # ================================================================
-# SUPPORT (اطلاعات پشتیبانی — قابل مدیریت از پنل ادمین)
+# SUPPORT
 # ================================================================
 
 @router.callback_query(F.data == "menu:support")
@@ -560,11 +525,6 @@ async def menu_support(call: types.CallbackQuery):
 # ================================================================
 # GLOBAL PHONE COLLECTION
 # ================================================================
-# میدل‌ور سراسری (middlewares.py) وقتی کاربری بدون شماره‌ی ثبت‌شده روی هر
-# دکمه‌ای بزنه، ازش شماره می‌خواد. این هندلر اون شماره رو می‌گیره و ذخیره
-# می‌کنه. عمداً StateFilter(None) داره تا با فلوهای دیگه‌ای که خودشون منتظر
-# F.contact هستن (مثل تست رایگان یا درخواست همکاری، که state اختصاصی خودشون
-# رو دارن) تداخل نکنه — این فقط وقتی اجرا می‌شه که کاربر توی هیچ FSM دیگه‌ای نباشه.
 
 @router.message(StateFilter(None), F.contact)
 async def collect_phone_globally(message: types.Message):

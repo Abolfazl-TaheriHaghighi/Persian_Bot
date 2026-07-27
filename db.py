@@ -370,6 +370,28 @@ def init_db():
         )
     """)
 
+    # ---- ارتقا برای پشتیبانی از چند پنل ----
+    # اضافه کردن نام، نوع پنل و تغییر نوع inbound_id برای پشتیبانی از فرمت‌های مختلف (مثل پاسارگارد)
+    cur.execute("ALTER TABLE panel_config ADD COLUMN IF NOT EXISTS name TEXT DEFAULT 'پنل اصلی'")
+    cur.execute("ALTER TABLE panel_config ADD COLUMN IF NOT EXISTS panel_type TEXT DEFAULT '3x-ui'")
+    cur.execute("ALTER TABLE panel_config ALTER COLUMN inbound_id TYPE TEXT USING inbound_id::TEXT")
+
+    # تبدیل ستون id پنل به حالت افزایشی (Serial) برای افزودن پنل‌های جدید
+    cur.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relkind = 'S' AND relname = 'panel_config_id_seq') THEN
+                CREATE SEQUENCE panel_config_id_seq;
+                ALTER TABLE panel_config ALTER COLUMN id SET DEFAULT nextval('panel_config_id_seq');
+                PERFORM setval('panel_config_id_seq', COALESCE((SELECT MAX(id) FROM panel_config), 0) + 1, false);
+            END IF;
+        END $$;
+    """)
+
+    # ارتباط دسته‌بندی‌ها و اکانت‌ها با یک پنل خاص
+    cur.execute("ALTER TABLE categories ADD COLUMN IF NOT EXISTS panel_id INTEGER REFERENCES panel_config(id) ON DELETE SET NULL")
+    cur.execute("ALTER TABLE vpn_accounts ADD COLUMN IF NOT EXISTS panel_id INTEGER REFERENCES panel_config(id) ON DELETE SET NULL")
+
     conn.commit()
     conn.close()
 
@@ -712,12 +734,12 @@ def get_category(cat_id):
     return r
 
 
-def add_category(name, emoji="📦", is_custom=False):
+def add_category(name, emoji="📦", is_custom=False, panel_id=None):
     conn = connect()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO categories (name, emoji, is_custom) VALUES (%s, %s, %s) RETURNING id",
-        (name, emoji, is_custom)
+        "INSERT INTO categories (name, emoji, is_custom, panel_id) VALUES (%s, %s, %s, %s) RETURNING id",
+        (name, emoji, is_custom, panel_id)
     )
     cid = cur.fetchone()[0]
     conn.commit()
@@ -743,6 +765,32 @@ def delete_category(cat_id):
     conn.commit()
     conn.close()
 
+
+def get_category_full(cat_id):
+    """گرفتن اطلاعات کامل دسته به همراه نام پنل متصل (برای منوی ادمین)"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.id, c.name, c.emoji, c.is_active, c.is_custom, c.panel_id, p.name as panel_name
+        FROM categories c
+        LEFT JOIN panel_config p ON c.panel_id = p.id
+        WHERE c.id=%s
+    """, (cat_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+def update_category(cat_id, field, value):
+    """ویرایش فیلدهای دسته‌بندی (نام یا پنل متصل)"""
+    allowed = {"name": "name", "panel_id": "panel_id"}
+    col = allowed.get(field)
+    if not col:
+        return
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE categories SET {col}=%s WHERE id=%s", (value, cat_id))
+    conn.commit()
+    conn.close()
 
 # ================== SERVICES ==================
 
@@ -785,7 +833,7 @@ def get_service(service_id):
     cur = conn.cursor()
     cur.execute("""
         SELECT s.id, s.name, s.description, s.price, s.duration_days, s.data_limit_gb,
-               s.is_active, COALESCE(c.name,'') as cat_name
+               s.is_active, COALESCE(c.name,'') as cat_name, c.panel_id
         FROM services s LEFT JOIN categories c ON s.category_id=c.id
         WHERE s.id=%s
     """, (service_id,))
@@ -933,20 +981,11 @@ def get_all_purchases():
 # ================== RENEWALS ==================
 
 def get_renewal_info(purchase_id, user_id=None):
-    """
-    اطلاعات لازم برای تمدید یک خرید: ایمیل کلاینت روی پنل + سرویس *فعلی*ش.
-    قیمت/مدت/حجم عمداً از services (نه purchases قدیمی) خونده می‌شه چون ممکنه
-    ادمین از زمان خرید اولیه قیمت رو عوض کرده باشه — تمدید همیشه با نرخ روز حساب می‌شه.
-    اگه user_id داده بشه، مالکیتِ خرید هم چک می‌شه (مسیر کاربر/همکار)؛ برای
-    مسیر ادمین با دسترسی کامل، user_id=None بده.
-    نکته: برای خریدهای پلن دلخواه (service_id=NULL در purchases، چون قیمت‌شون
-    per-GB/per-day حساب می‌شه نه از جدول services) این تابع نتیجه‌ای برنمی‌گردونه.
-    """
     conn = connect()
     cur = conn.cursor()
     if user_id is not None:
         cur.execute("""
-            SELECT v.email, s.id, s.name, s.price, s.duration_days, s.data_limit_gb, p.user_id
+            SELECT v.email, s.id, s.name, s.price, s.duration_days, s.data_limit_gb, p.user_id, v.panel_id
             FROM purchases p
             JOIN vpn_accounts v ON v.purchase_id = p.id
             JOIN services s ON s.id = p.service_id
@@ -954,7 +993,7 @@ def get_renewal_info(purchase_id, user_id=None):
         """, (purchase_id, user_id))
     else:
         cur.execute("""
-            SELECT v.email, s.id, s.name, s.price, s.duration_days, s.data_limit_gb, p.user_id
+            SELECT v.email, s.id, s.name, s.price, s.duration_days, s.data_limit_gb, p.user_id, v.panel_id
             FROM purchases p
             JOIN vpn_accounts v ON v.purchase_id = p.id
             JOIN services s ON s.id = p.service_id
@@ -1612,14 +1651,14 @@ def update_panel_config(**kwargs):
 # ================== VPN ACCOUNTS ==================
 
 def save_vpn_account(user_id, email, uuid, inbound_id, expire_time, data_limit,
-                     purchase_id=None, is_trial=False, sub_id=None, sub_url=None):
+                     purchase_id=None, is_trial=False, sub_id=None, sub_url=None, panel_id=1):
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO vpn_accounts
-        (user_id, purchase_id, email, uuid, sub_id, sub_url, inbound_id, expire_time, data_limit, is_trial)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-    """, (user_id, purchase_id, email, uuid, sub_id, sub_url, inbound_id, expire_time, data_limit, is_trial))
+        (user_id, purchase_id, email, uuid, sub_id, sub_url, inbound_id, expire_time, data_limit, is_trial, panel_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (user_id, purchase_id, email, uuid, sub_id, sub_url, inbound_id, expire_time, data_limit, is_trial, panel_id))
     vid = cur.fetchone()[0]
     conn.commit()
     conn.close()
@@ -1627,10 +1666,6 @@ def save_vpn_account(user_id, email, uuid, inbound_id, expire_time, data_limit,
 
 
 def get_user_vpn_accounts(user_id):
-    """
-    اطلاعات کامل سرویس‌های VPN کاربر شامل نام سرویس، دسته‌بندی و شماره‌ی سفارش
-    (با JOIN به purchases و services/categories — برای تست رایگان این فیلدها NULL میشن)
-    """
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
@@ -1639,7 +1674,7 @@ def get_user_vpn_accounts(user_id):
             v.data_limit, v.created_at, v.is_trial,
             COALESCE(p.service_name, s.name, 'تست رایگان') as service_name,
             COALESCE(c.name, '—') as category_name,
-            v.purchase_id, v.note
+            v.purchase_id, v.note, v.panel_id
         FROM vpn_accounts v
         LEFT JOIN purchases p ON v.purchase_id = p.id
         LEFT JOIN services s ON p.service_id = s.id
@@ -1653,11 +1688,6 @@ def get_user_vpn_accounts(user_id):
 
 
 def get_vpn_account(account_id, user_id=None):
-    """
-    اطلاعات کامل یک سرویس VPN مشخص (برای صفحه‌ی جزئیات/مدیریت سرویس).
-    اگه user_id داده بشه، مالکیت هم چک می‌شه (کاربر عادی/همکار فقط سرویس خودشون
-    رو می‌بینن)؛ برای ادمین با دسترسی کامل، user_id=None بده.
-    """
     conn = connect()
     cur = conn.cursor()
     if user_id is not None:
@@ -1667,7 +1697,7 @@ def get_vpn_account(account_id, user_id=None):
                 v.data_limit, v.created_at, v.is_trial,
                 COALESCE(p.service_name, s.name, 'تست رایگان') as service_name,
                 COALESCE(c.name, '—') as category_name,
-                v.purchase_id, v.note, v.user_id
+                v.purchase_id, v.note, v.user_id, v.panel_id
             FROM vpn_accounts v
             LEFT JOIN purchases p ON v.purchase_id = p.id
             LEFT JOIN services s ON p.service_id = s.id
@@ -1681,7 +1711,7 @@ def get_vpn_account(account_id, user_id=None):
                 v.data_limit, v.created_at, v.is_trial,
                 COALESCE(p.service_name, s.name, 'تست رایگان') as service_name,
                 COALESCE(c.name, '—') as category_name,
-                v.purchase_id, v.note, v.user_id
+                v.purchase_id, v.note, v.user_id, v.panel_id
             FROM vpn_accounts v
             LEFT JOIN purchases p ON v.purchase_id = p.id
             LEFT JOIN services s ON p.service_id = s.id
@@ -2205,5 +2235,62 @@ def set_support_phone(phone: str):
         INSERT INTO bot_settings (key, value) VALUES ('support_phone', %s)
         ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
     """, (phone,))
+    conn.commit()
+    conn.close()
+
+# ================== MULTI-PANEL MANAGEMENT ==================
+
+def get_all_panels():
+    """دریافت لیست تمام پنل‌های ثبت شده"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, panel_type, panel_url FROM panel_config ORDER BY id")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_panel(panel_id: int):
+    """دریافت اطلاعات کامل یک پنل خاص"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, name, panel_type, panel_url, auth_type, username, password,
+               api_key, inbound_id, panel_path, sub_port, sub_path
+        FROM panel_config WHERE id=%s
+    """, (panel_id,))
+    r = cur.fetchone()
+    conn.close()
+    return r
+
+def add_panel(name: str, panel_type: str):
+    """افزودن پنل جدید"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO panel_config (name, panel_type) VALUES (%s, %s) RETURNING id",
+        (name, panel_type)
+    )
+    pid = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return pid
+
+def update_panel_field(panel_id: int, field: str, value):
+    """ویرایش یک فیلد خاص از یک پنل مشخص"""
+    allowed = {"name", "panel_type", "panel_url", "auth_type", "username",
+               "password", "api_key", "inbound_id", "panel_path", "sub_port", "sub_path"}
+    if field not in allowed:
+        return
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE panel_config SET {field}=%s WHERE id=%s", (value, panel_id))
+    conn.commit()
+    conn.close()
+
+def delete_panel(panel_id: int):
+    """حذف کامل یک پنل"""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM panel_config WHERE id=%s", (panel_id,))
     conn.commit()
     conn.close()

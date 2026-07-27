@@ -1,0 +1,266 @@
+----------------------------------------
+Base
+----------------------------------------
+GET /
+GET /health
+
+----------------------------------------
+Admin
+----------------------------------------
+POST /api/admin/token
+POST /api/admin/miniapp/token
+GET /api/admin
+POST /api/admin
+PUT /api/admin/{username}
+DELETE /api/admin/{username}
+PUT /api/admin/by-username/{username}
+DELETE /api/admin/by-username/{username}
+PUT /api/admin/by-id/{admin_id}
+DELETE /api/admin/by-id/{admin_id}
+GET /api/admins
+GET /api/admins/simple
+GET /api/admin/{username}/usage
+GET /api/admin/by-username/{username}/usage
+GET /api/admin/by-id/{admin_id}/usage
+POST /api/admin/{username}/users/disable
+POST /api/admin/by-username/{username}/users/disable
+POST /api/admin/by-id/{admin_id}/users/disable
+POST /api/admin/{username}/users/activate
+POST /api/admin/by-username/{username}/users/activate
+POST /api/admin/by-id/{admin_id}/users/activate
+DELETE /api/admin/{username}/users
+DELETE /api/admin/by-username/{username}/users
+DELETE /api/admin/by-id/{admin_id}/users
+POST /api/admin/{username}/reset
+POST /api/admin/by-username/{username}/reset
+POST /api/admin/by-id/{admin_id}/reset
+POST /api/admins/bulk/delete
+POST /api/admins/bulk/reset
+POST /api/admins/bulk/disable
+POST /api/admins/bulk/enable
+POST /api/admins/bulk/users/disable
+POST /api/admins/bulk/users/activate
+DELETE /api/admins/bulk/users
+
+----------------------------------------
+API Keys
+----------------------------------------
+POST /api/api_key
+GET /api/api_keys
+POST /api/api_keys/bulk/delete
+PATCH /api/api_key/{key_id}
+GET /api/api_key/{key_id}
+DELETE /api/api_key/{key_id}
+POST /api/api_key/{key_id}/revoke
+
+----------------------------------------
+Admin Roles
+----------------------------------------
+GET /api/admin-roles
+GET /api/admin-roles/simple
+GET /api/admin-role/{role_id}
+PUT /api/admin-role/{role_id}
+DELETE /api/admin-role/{role_id}
+POST /api/admin-role
+
+----------------------------------------
+Setup
+----------------------------------------
+POST /api/setup/owner
+PATCH /api/setup/owner
+DELETE /api/setup/owner
+POST /api/setup/owner/upgrade
+
+----------------------------------------
+System
+----------------------------------------
+GET /api/system
+GET /api/system/resources
+GET /api/system/users
+GET /api/inbounds
+GET /api/inbounds/details
+GET /api/workers/health
+
+----------------------------------------
+Settings
+----------------------------------------
+GET /api/settings
+PUT /api/settings
+GET /api/settings/general
+
+----------------------------------------
+Groups
+----------------------------------------
+POST /api/group
+GET /api/groups
+GET /api/groups/simple
+GET /api/group/{group_id}
+PUT /api/group/{group_id}
+DELETE /api/group/{group_id}
+POST /api/groups/bulk/add
+POST /api/groups/bulk/remove
+POST /api/groups/bulk/delete
+POST /api/groups/bulk/disable
+POST /api/groups/bulk/enable
+
+----------------------------------------
+Core
+----------------------------------------
+POST /api/core
+GET /api/core/{core_id}
+PUT /api/core/{core_id}
+DELETE /api/core/{core_id}
+GET /api/cores
+GET /api/cores/simple
+POST /api/core/{core_id}/restart
+POST /api/cores/bulk/delete
+
+----------------------------------------
+Client Template
+----------------------------------------
+POST /api/client_template
+GET /api/client_template/{template_id}
+PUT /api/client_template/{template_id}
+DELETE /api/client_template/{template_id}
+GET /api/client_templates
+GET /api/client_templates/simple
+POST /api/client_templates/bulk/delete
+
+----------------------------------------
+Host
+----------------------------------------
+GET /api/host/{host_id}
+PUT /api/host/{host_id}
+DELETE /api/host/{host_id}
+GET /api/hosts
+PUT /api/hosts
+POST /api/host/
+POST /api/hosts/bulk/delete
+POST /api/hosts/bulk/disable
+POST /api/hosts/bulk/enable
+
+----------------------------------------
+Node
+----------------------------------------
+GET /api/node/settings
+GET /api/node/usage
+GET /api/node/user_counts/{metric}
+GET /api/nodes
+GET /api/nodes/simple
+POST /api/nodes/reconnect
+POST /api/node
+GET /api/node/{node_id}
+PUT /api/node/{node_id}
+DELETE /api/node/{node_id}
+POST /api/node/{node_id}/update
+POST /api/node/{node_id}/core_update
+POST /api/node/{node_id}/geofiles
+POST /api/node/{node_id}/reset
+POST /api/node/{node_id}/reconnect
+PUT /api/node/{node_id}/sync
+GET /api/node/{node_id}/logs
+GET /api/node/{node_id}/stats
+GET /api/node/{node_id}/realtime_stats
+GET /api/node/{node_id}/outbounds_latency
+GET /api/nodes/realtime_stats
+GET /api/node/online_stats/{user_id}/ip
+GET /api/node/{node_id}/online_stats/{user_id}
+GET /api/node/{node_id}/online_stats/{user_id}/ip
+DELETE /api/nodes/clear_usage_data/{table}
+POST /api/nodes/bulk/delete
+POST /api/nodes/bulk/disable
+POST /api/nodes/bulk/enable
+POST /api/nodes/bulk/reset
+POST /api/nodes/bulk/reconnect
+POST /api/nodes/bulk/update
+
+----------------------------------------
+User
+----------------------------------------
+POST /api/user
+PUT /api/user/{username}
+DELETE /api/user/{username}
+GET /api/user/{username}
+PUT /api/user/by-username/{username}
+DELETE /api/user/by-username/{username}
+GET /api/user/by-username/{username}
+PUT /api/user/by-id/{user_id}
+DELETE /api/user/by-id/{user_id}
+GET /api/user/by-id/{user_id}
+PUT /api/user/{username}/disabled
+PUT /api/user/by-username/{username}/disabled
+PUT /api/user/by-id/{user_id}/disabled
+POST /api/user/{username}/reset
+POST /api/user/by-username/{username}/reset
+POST /api/user/by-id/{user_id}/reset
+POST /api/user/{username}/revoke_sub
+POST /api/user/by-username/{username}/revoke_sub
+POST /api/user/by-id/{user_id}/revoke_sub
+POST /api/users/reset
+GET /api/users/sub_update/chart
+PUT /api/user/{username}/set_owner
+PUT /api/user/by-username/{username}/set_owner
+PUT /api/user/by-id/{user_id}/set_owner
+POST /api/user/{username}/active_next
+POST /api/user/by-username/{username}/active_next
+POST /api/user/by-id/{user_id}/active_next
+GET /api/user/{user_id}/subscription/{client_type}
+GET /api/user/{username}/sub_update
+GET /api/user/by-username/{username}/sub_update
+GET /api/user/by-id/{user_id}/sub_update
+GET /api/users
+GET /api/users/simple
+GET /api/user/{username}/usage
+GET /api/user/by-username/{username}/usage
+GET /api/user/by-id/{user_id}/usage
+GET /api/users/usage
+GET /api/users/counts/{metric}
+GET /api/users/expired
+DELETE /api/users/expired
+POST /api/users/bulk/delete
+POST /api/users/bulk/reset
+POST /api/users/bulk/disable
+POST /api/users/bulk/enable
+POST /api/users/bulk/revoke_sub
+PUT /api/users/bulk/set_owner
+POST /api/user/from_template
+POST /api/users/bulk/from_template
+POST /api/users/bulk/apply_template
+PUT /api/user/from_template/{username}
+PUT /api/user/from_template/by-username/{username}
+PUT /api/user/from_template/by-id/{user_id}
+POST /api/users/bulk/expire
+POST /api/users/bulk/data_limit
+POST /api/users/bulk/proxy_settings
+POST /api/users/bulk/wireguard/reallocate-peer-ips
+
+----------------------------------------
+Subscription
+----------------------------------------
+GET /sub/{token}/
+HEAD /sub/{token}/
+GET /sub/{token}/info
+GET /sub/{token}/raw
+GET /sub/{token}/apps
+GET /sub/{token}/usage
+GET /sub/{token}/{client_type}
+
+----------------------------------------
+User Template
+----------------------------------------
+POST /api/user_template
+GET /api/user_template/{template_id}
+PUT /api/user_template/{template_id}
+DELETE /api/user_template/{template_id}
+GET /api/user_templates
+GET /api/user_templates/simple
+POST /api/user_templates/bulk/delete
+POST /api/user_templates/bulk/disable
+POST /api/user_templates/bulk/enable
+
+----------------------------------------
+User HWID
+----------------------------------------
+GET /api/user/{user_id}/hwids
+DELETE /api/user/{user_id}/hwids/{hwid}
+POST /api/user/{user_id}/hwids/reset

@@ -22,11 +22,6 @@ router = Router()
 
 
 async def _redirect_to_shop_with_explanation(call: CallbackQuery, reason: str):
-    """
-    وقتی تمدید یه سرویس ممکن نباشه (پلن دلخواه، مالکیت نامعتبر و...)، به‌جای
-    ول کردن کاربر با فقط یه popup، می‌بریمش به فروشگاه و توضیح می‌دیم که
-    می‌تونه به‌جاش یه سرویس جدید بخره.
-    """
     partner = await run_db(is_partner, call.from_user.id)
     categories = await run_db(get_categories_for_user, partner, call.from_user.id)
 
@@ -63,7 +58,8 @@ async def renew_prompt(call: CallbackQuery):
         )
         return
 
-    email, service_id, service_name, price, duration_days, data_limit_gb, owner_id = info
+    # آپدیت: 8 فیلد برمی‌گردد
+    email, service_id, service_name, price, duration_days, data_limit_gb, owner_id, panel_id = info
     dl = data_label_short(data_limit_gb)
     text = (
         f"🔄 تمدید اشتراک «{service_name}»\n"
@@ -88,7 +84,8 @@ async def renew_confirm(call: CallbackQuery):
         await call.answer("این سرویس پیدا نشد یا مال شما نیست.", show_alert=True)
         await _redirect_to_shop_with_explanation(call, "این سرویس پیدا نشد یا مال شما نیست.")
         return
-    email, service_id, service_name, price, duration_days, data_limit_gb, owner_id = info
+        
+    email, service_id, service_name, price, duration_days, data_limit_gb, owner_id, panel_id = info
 
     balance = await run_db(get_balance, user_id)
     if balance < price:
@@ -97,8 +94,8 @@ async def renew_confirm(call: CallbackQuery):
 
     add_bytes = int(data_limit_gb * 1024 ** 3) if data_limit_gb and data_limit_gb > 0 else 0
 
-    # مرحله‌ی ۱: اول پنل — قبل از کسر هیچ پولی
-    ok = await renew_vpn_account(email, add_days=duration_days, add_bytes=add_bytes)
+    # مرحله‌ی ۱: اول پنل — اتصال به پنل درست
+    ok = await renew_vpn_account(email, add_days=duration_days, add_bytes=add_bytes, panel_id=panel_id or 1)
     if not ok:
         await call.message.edit_text(
             "❌ تمدید روی پنل ناموفق بود. هیچ مبلغی از حساب شما کم نشد.\n"
@@ -113,8 +110,6 @@ async def renew_confirm(call: CallbackQuery):
         apply_renewal_after_panel_success, user_id, purchase_id, price, duration_days, add_bytes
     )
     if not saved:
-        # حالت نادر: پنل تمدید شد ولی هم‌زمان موجودی کافی نبود (race).
-        # اشتراک واقعی روی پنل *تمدید شده* — این باید لاگ بشه تا دستی رسیدگی شه.
         logging.error(
             f"Renewal: panel succeeded but local balance deduction failed — "
             f"user={user_id} purchase={purchase_id} amount={price}"
@@ -207,7 +202,18 @@ async def admin_renew_gb(message: Message, state: FSMContext):
         await message.answer("هیچ مقداری برای افزایش وارد نشد — عملیات لغو شد.", reply_markup=admin_panel_kb())
         return
 
-    ok = await renew_vpn_account(email, add_days=days, add_bytes=add_bytes)
+    def _get_panel_id_by_email(email_addr):
+        from db import connect as _conn
+        conn = _conn()
+        cur = conn.cursor()
+        cur.execute("SELECT panel_id FROM vpn_accounts WHERE email=%s LIMIT 1", (email_addr,))
+        r = cur.fetchone()
+        conn.close()
+        return r[0] if r and r[0] else 1
+
+    panel_id = await run_db(_get_panel_id_by_email, email)
+    ok = await renew_vpn_account(email, add_days=days, add_bytes=add_bytes, panel_id=panel_id)
+    
     await state.clear()
 
     if not ok:

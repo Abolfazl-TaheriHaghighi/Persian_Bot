@@ -1,5 +1,6 @@
 from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import ADMIN_ID, is_admin
@@ -17,6 +18,7 @@ from db import (
     get_user_purchases,
     get_client_naming_config, set_client_naming_prefix, reset_client_naming_counter,
     set_default_client_group, set_partner_group_label,
+    get_all_panels, get_panel, add_panel, update_panel_field, delete_panel,
     connect as db_connect
 )
 from keyboards import (
@@ -29,12 +31,23 @@ from states import (
     AdminAddCategory, AdminAddService, AdminEditService,
     AdminEditBalance, AdminDiscountCode,
     AdminTrialConfig, AdminPhoneOverride, AdminReferralConfig,
-    AdminAddChannel, AdminAddPartnerManual, AdminClientNaming, AdminPartnerGroupLabel
+    AdminAddChannel, AdminAddPartnerManual, AdminClientNaming, AdminPartnerGroupLabel,
+    AdminEditCategory
 )
 from utils import format_data, data_label_short, normalize_phone, run_db, sanitize_naming_prefix, chunk_blocks, start_prompt, finish_prompt
 
 router = Router()
 
+# --- States جدید برای پنل‌های چندگانه ---
+class AdminPanelAdd(StatesGroup):
+    name = State()
+    panel_type = State()
+
+class AdminPanelEdit(StatesGroup):
+    entering_value = State()
+
+class AdminAddCategoryPanel(StatesGroup):
+    waiting = State()
 
 # ================================================================
 # ADMIN PANEL
@@ -99,7 +112,6 @@ async def admin_purchases(call: types.CallbackQuery):
     await call.message.edit_text(text, reply_markup=back_kb("admin:back"))
     await call.answer()
 
-
 # ================================================================
 # CATEGORIES
 # ================================================================
@@ -109,13 +121,38 @@ async def admin_categories(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     cats = await run_db(get_all_categories, active_only=False)
+    from keyboards import admin_categories_kb
     if not cats:
-        await call.message.edit_text("🗂 هیچ دسته‌ای ثبت نشده.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➕ افزودن دسته", callback_data="admin:add_category")],
-            [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")]
-        ]))
+        await call.message.edit_text("🗂 هیچ دسته‌ای ثبت نشده.", reply_markup=admin_categories_kb(cats))
     else:
-        await call.message.edit_text("🗂 دسته‌بندی‌ها:\n✅=فعال | ❌=غیرفعال", reply_markup=admin_categories_kb(cats))
+        await call.message.edit_text("🗂 برای مدیریت، روی نام دسته‌بندی کلیک کن:", reply_markup=admin_categories_kb(cats))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:cat_detail:"))
+async def admin_cat_detail(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cat_id = int(call.data.split(":")[2])
+    from db import get_category_full
+    cat = await run_db(get_category_full, cat_id)
+    if not cat:
+        await call.answer("❌ دسته پیدا نشد", show_alert=True)
+        return
+
+    cid, name, emoji, is_active, is_custom, panel_id, panel_name = cat
+    p_text = f"🖥 {panel_name}" if panel_id else "❌ بدون اتصال (هیچ پنلی)"
+
+    text = (
+        f"🗂 جزئیات دسته‌بندی\n{'─'*22}\n"
+        f"نام: {emoji} {name}\n"
+        f"وضعیت: {'✅ فعال' if is_active else '❌ غیرفعال'}\n"
+        f"نوع: {'🎯 سفارشی (پلن دلخواه)' if is_custom else '📦 معمولی'}\n"
+        f"پنل متصل: {p_text}\n"
+    )
+
+    from keyboards import admin_cat_detail_kb
+    await call.message.edit_text(text, reply_markup=admin_cat_detail_kb(cid, is_active))
     await call.answer()
 
 
@@ -126,8 +163,9 @@ async def admin_toggle_cat(call: types.CallbackQuery):
     cat_id = int(call.data.split(":")[2])
     new_status = await run_db(toggle_category, cat_id)
     await call.answer("✅ فعال شد" if new_status else "❌ غیرفعال شد", show_alert=True)
-    cats = await run_db(get_all_categories, active_only=False)
-    await call.message.edit_text("🗂 دسته‌بندی‌ها:\n✅=فعال | ❌=غیرفعال", reply_markup=admin_categories_kb(cats))
+    # آپدیت صفحه بعد از تغییر وضعیت
+    call.data = f"admin:cat_detail:{cat_id}"
+    await admin_cat_detail(call)
 
 
 @router.callback_query(F.data.startswith("admin:del_cat:"))
@@ -136,42 +174,114 @@ async def admin_del_cat(call: types.CallbackQuery):
         return
     cat_id = int(call.data.split(":")[2])
     await run_db(delete_category, cat_id)
-    await call.answer("🗑 دسته غیرفعال شد", show_alert=True)
-    cats = await run_db(get_all_categories, active_only=False)
-    if cats:
-        await call.message.edit_text("🗂 دسته‌بندی‌ها:", reply_markup=admin_categories_kb(cats))
-    else:
-        await call.message.edit_text("🗂 هیچ دسته‌ای باقی نمونده.", reply_markup=back_kb("admin:back"))
+    await call.answer("🗑 دسته حذف شد", show_alert=True)
+    # بازگشت به لیست دسته‌ها
+    call.data = "admin:categories"
+    await admin_categories(call)
 
 
+@router.callback_query(F.data.startswith("admin:edit_cat:"))
+async def admin_edit_cat_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id): return
+    parts = call.data.split(":")
+    cat_id = int(parts[2])
+    field = parts[3]
+
+    await state.update_data(editing_cat_id=cat_id)
+
+    if field == "name":
+        await state.set_state(AdminEditCategory.entering_name)
+        await start_prompt(call, state, "✏️ نام جدید دسته‌بندی رو وارد کن (بدون ایموجی، فقط نام):")
+        await call.answer()
+    elif field == "panel":
+        panels = await run_db(get_all_panels)
+        buttons = []
+        for p in panels:
+            buttons.append([InlineKeyboardButton(text=f"🖥 {p[1]} ({p[2].upper()})", callback_data=f"admin:set_cat_panel:{cat_id}:{p[0]}")])
+        buttons.append([InlineKeyboardButton(text="❌ بدون پنل", callback_data=f"admin:set_cat_panel:{cat_id}:0")])
+        buttons.append([InlineKeyboardButton(text="🔙 انصراف", callback_data=f"admin:cat_detail:{cat_id}")])
+
+        await call.message.edit_text("🖥 این دسته‌بندی باید به کدوم سرور/پنل متصل باشه؟", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await call.answer()
+
+
+@router.message(AdminEditCategory.entering_name)
+async def admin_edit_cat_name_save(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    cat_id = data["editing_cat_id"]
+    new_name = message.text.strip()
+
+    from db import update_category
+    await run_db(update_category, cat_id, "name", new_name)
+    await state.clear()
+    await finish_prompt(message, state, f"✅ نام دسته‌بندی تغییر کرد.", reply_markup=home_button_kb())
+
+
+@router.callback_query(F.data.startswith("admin:set_cat_panel:"))
+async def admin_set_cat_panel(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    parts = call.data.split(":")
+    cat_id = int(parts[2])
+    panel_id = int(parts[3])
+
+    final_panel_id = panel_id if panel_id > 0 else None
+    from db import update_category
+    await run_db(update_category, cat_id, "panel_id", final_panel_id)
+
+    await call.answer("✅ پنل دسته‌بندی تغییر کرد.", show_alert=True)
+    call.data = f"admin:cat_detail:{cat_id}"
+    await admin_cat_detail(call)
+
+
+# ---- افزودن دسته جدید ----
 @router.callback_query(F.data == "admin:add_category")
 async def admin_add_cat_start(call: types.CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
         return
     await state.set_state(AdminAddCategory.name)
-    await call.message.answer("🗂 نام دسته‌بندی رو وارد کن:")
+    await call.message.answer("🗂 نام دسته‌بندی رو وارد کن (مثلاً: 🇩🇪 سرور آلمان):")
     await call.answer()
 
 
 @router.message(AdminAddCategory.name)
 async def admin_add_cat_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text.strip())
-    await state.set_state(AdminAddCategory.emoji)
-    await message.answer("😀 ایموجی دسته رو بفرست (مثلاً 🌍 یا 🔥)\nیا /skip برای پیش‌فرض 📦:")
+    
+    panels = await run_db(get_all_panels)
+    if not panels:
+        await state.update_data(panel_id=None)
+        await state.set_state(AdminAddCategory.emoji)
+        await message.answer("😀 ایموجی دسته رو بفرست (مثلاً 🌍 یا 🔥)\nیا /skip برای پیش‌فرض 📦:")
+        return
 
+    buttons = []
+    for p in panels:
+        buttons.append([InlineKeyboardButton(text=f"🖥 {p[1]} ({p[2].upper()})", callback_data=f"admin:cat_set_panel:{p[0]}")])
+    buttons.append([InlineKeyboardButton(text="❌ بدون اتصال به پنل", callback_data="admin:cat_set_panel:0")])
+    
+    await state.set_state(AdminAddCategoryPanel.waiting)
+    await message.answer("🖥 این دسته‌بندی قراره اکانت‌هاش رو روی کدوم سرور/پنل بسازه؟", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data.startswith("admin:cat_set_panel:"), AdminAddCategoryPanel.waiting)
+async def admin_add_cat_panel(call: types.CallbackQuery, state: FSMContext):
+    pid = int(call.data.split(":")[2])
+    await state.update_data(panel_id=pid if pid > 0 else None)
+    await state.set_state(AdminAddCategory.emoji)
+    await call.message.edit_text("😀 ایموجی دسته رو بفرست (مثلاً 🌍 یا 🔥)\nیا /skip برای پیش‌فرض 📦:")
+    await call.answer()
 
 @router.message(AdminAddCategory.emoji)
 async def admin_add_cat_emoji(message: types.Message, state: FSMContext):
     emoji = "📦" if message.text == "/skip" else message.text.strip()
     data = await state.get_data()
-    cid = await run_db(add_category, data["name"], emoji)
+    cid = await run_db(add_category, data["name"], emoji, False, data.get("panel_id"))
     await state.clear()
     await message.answer(
         f"✅ دسته‌بندی اضافه شد!\n{emoji} {data['name']}\n🔑 ID: {cid}",
         reply_markup=home_button_kb()
     )
 
-
+    
 # ================================================================
 # SERVICES
 # ================================================================
@@ -294,9 +404,6 @@ async def admin_save_edit(message: types.Message, state: FSMContext):
             await message.answer("❌ فقط عدد صحیح:")
             return
         value = int(raw)
-        # 🐛 همون باگ حیاتی «مدت = صفر» (توضیح کامل در admin_add_svc_duration) —
-        # اینجا هم باید رد بشه، چون این مسیر (ویرایش سرویس موجود) هم می‌تونه
-        # duration_days رو به 0 تغییر بده و همون فاجعه رو تکرار کنه.
         if field == "duration" and value <= 0:
             await message.answer(
                 "❌ مدت باید حداقل ۱ روز باشه.\n"
@@ -380,11 +487,6 @@ async def admin_add_svc_duration(message: types.Message, state: FSMContext):
         await message.answer("❌ فقط عدد:")
         return
     duration_value = int(message.text)
-    # 🐛 باگ حیاتی که قبلاً وجود داشت: اگه ادمین اینجا عدد 0 وارد می‌کرد، بدون
-    # هیچ هشداری قبول می‌شد. پنل هر زمانی expiryTime=0 دریافت کنه، سرویس رو
-    # "نامحدود برای همیشه" می‌سازه — یعنی هر خریداری از این سرویس یه اکانت
-    # ابدی و رایگان می‌گرفت. برخلاف حجم (که 0=نامحدود یه قابلیت عمدی و مستنده)،
-    # مدت صفر هیچ‌وقت قصد واقعی ادمین نیست، پس اینجا کاملاً رد می‌شه.
     if duration_value <= 0:
         await message.answer(
             "❌ مدت باید حداقل ۱ روز باشه.\n"
@@ -707,7 +809,7 @@ async def admin_trial_add_phone_start(call: types.CallbackQuery, state: FSMConte
 async def admin_trial_phone_input(message: types.Message, state: FSMContext):
     phone = normalize_phone(message.text)
     if not phone.startswith("09") or len(phone) != 11:
-        await message.answer("❌ شماره نامعتبر:")
+        await message.answer("❌ شماره نامعتبر. مثلاً: 09123456789")
         return
 
     data = await state.get_data()
@@ -964,9 +1066,6 @@ async def admin_ch_add_start(call: types.CallbackQuery, state: FSMContext):
 async def admin_ch_id_input(message: types.Message, state: FSMContext):
     raw = message.text.strip()
 
-    # نرمال‌سازی: تلگرام get_chat هم @username رو قبول می‌کنه هم آیدی عددی
-    # (باید int باشه، نه رشته). اگه رشته‌ی عددی بود (با یا بدون منفی)، به int
-    # تبدیلش می‌کنیم؛ وگرنه همون رشته (یوزرنیم) رو با @ می‌فرستیم.
     lookup_id = raw
     if raw.lstrip("-").isdigit():
         lookup_id = int(raw)
@@ -975,11 +1074,10 @@ async def admin_ch_id_input(message: types.Message, state: FSMContext):
 
     await state.update_data(channel_id=raw)
 
-    # سعی می‌کنیم اطلاعات کانال رو از تلگرام بگیریم
     try:
         chat = await message.bot.get_chat(lookup_id)
         await state.update_data(
-            channel_id=chat.id,  # آیدی عددی واقعی رو ذخیره می‌کنیم، نه ورودی خام
+            channel_id=chat.id, 
             channel_username=chat.username or "",
             channel_title=chat.title or raw
         )
@@ -991,10 +1089,6 @@ async def admin_ch_id_input(message: types.Message, state: FSMContext):
             f"یا /skip اگه کانال پابلیکه:"
         )
     except Exception as e:
-        # نکته‌ی مهم: قبلاً دلیل واقعی خطا نشون داده نمی‌شد و فقط یه حدس کلی
-        # («ربات ادمین نیست؟») زده می‌شد — که تشخیص مشکل واقعی رو سخت می‌کرد.
-        # الان متن دقیق خطای تلگرام هم نشون داده می‌شه (مثلاً "chat not found"
-        # یا "bot is not a member") تا معلوم بشه مشکل از چیه.
         await message.answer(
             f"⚠️ نتونستم اطلاعات کانال رو خودکار بگیرم.\n"
             f"📄 خطای تلگرام: {e}\n\n"
@@ -1038,59 +1132,113 @@ async def admin_ch_invite_input(message: types.Message, state: FSMContext):
 
 
 # ================================================================
-# PANEL CONFIG MANAGEMENT
+# MULTI-PANEL CONFIG MANAGEMENT
 # ================================================================
 
-from states import AdminPanelConfig
-from db import get_panel_config, update_panel_config
-from panel import test_panel_connection, get_inbound_list
-
-
-def panel_config_kb(cfg):
-    if not cfg:
-        url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path = (None,)*9
-    elif len(cfg) >= 9:
-        url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path = cfg
-    else:
-        url, auth_type, username, password, api_key, inbound_id, panel_path = cfg[:7]
-        sub_port, sub_path = None, "sub"
-    connected = "✅" if url else "❌"
-    # نکته: یوزر/پس کاملاً حذف شد — این پنل فقط با API Key وصل می‌شه (چون
-    # لاگین کوکی‌محور روش دیگه کار نمی‌کرد). دکمه‌ی سوییچ روش اتصال و
-    # فیلدهای یوزرنیم/پسورد دیگه اینجا نشون داده نمی‌شن.
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{connected} آدرس پنل: {url or 'تنظیم نشده'}", callback_data="admin:panel_set:panel_url")],
-        [InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data="admin:panel_set:api_key")],
-        [InlineKeyboardButton(text=f"📡 Inbound ID: {inbound_id or '—'}", callback_data="admin:panel_set:inbound_id")],
-        [InlineKeyboardButton(text=f"📂 Panel Path: {panel_path or '/'}", callback_data="admin:panel_set:panel_path")],
-        [InlineKeyboardButton(text=f"🔌 پورت لینک Sub: {sub_port or 2096}", callback_data="admin:panel_set:sub_port")],
-        [InlineKeyboardButton(text=f"📎 Sub Path: /{sub_path or 'sub'}", callback_data="admin:panel_set:sub_path")],
-        [InlineKeyboardButton(text="📋 لیست Inbound ها", callback_data="admin:panel_inbounds")],
-        [InlineKeyboardButton(text="🔌 تست اتصال", callback_data="admin:panel_test")],
-        [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
-    ])
-
+from panel import test_panel_connection, get_inbound_list, invalidate_panel_cache
 
 @router.callback_query(F.data == "admin:panel_config")
-async def admin_panel_config(call: types.CallbackQuery):
+async def admin_panels_list(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    cfg = await run_db(get_panel_config)
-    await call.message.edit_text("⚙️ تنظیمات پنل VPN:", reply_markup=panel_config_kb(cfg))
+    panels = await run_db(get_all_panels)
+    
+    buttons = []
+    if panels:
+        for p in panels:
+            pid, name, ptype, url = p
+            status = "✅" if url else "⚠️"
+            buttons.append([InlineKeyboardButton(text=f"{status} {name} ({ptype.upper()})", callback_data=f"admin:panel_detail:{pid}")])
+            
+    buttons.append([InlineKeyboardButton(text="➕ افزودن سرور/پنل جدید", callback_data="admin:panel_add")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
+    
+    text = "⚙️ مدیریت سرورها و پنل‌های VPN:\nیک پنل را برای ویرایش انتخاب کرده یا پنل جدید بسازید:"
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await call.answer()
 
+@router.callback_query(F.data == "admin:panel_add")
+async def admin_panel_add_start(call: types.CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id): return
+    await state.set_state(AdminPanelAdd.name)
+    await call.message.answer("📝 یک نام دلخواه برای این سرور وارد کن (مثلاً: 🇩🇪 سرور آلمان):")
+    await call.answer()
+
+@router.message(AdminPanelAdd.name)
+async def admin_panel_add_name(message: types.Message, state: FSMContext):
+    await state.update_data(panel_name=message.text.strip())
+    await state.set_state(AdminPanelAdd.panel_type)
+    buttons = [
+        [InlineKeyboardButton(text="3x-ui", callback_data="ptype:3x-ui")],
+        [InlineKeyboardButton(text="PasarGuard", callback_data="ptype:pasarguard")]
+    ]
+    await message.answer("نوع پنل رو انتخاب کن:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data.startswith("ptype:"), AdminPanelAdd.panel_type)
+async def admin_panel_add_type(call: types.CallbackQuery, state: FSMContext):
+    ptype = call.data.split(":")[1]
+    data = await state.get_data()
+    pid = await run_db(add_panel, data["panel_name"], ptype)
+    await state.clear()
+    await call.message.answer(f"✅ پنل {data['panel_name']} اضافه شد!\nحالا می‌تونی از لیست، تنظیماتش رو کامل کنی.", reply_markup=home_button_kb())
+
+@router.callback_query(F.data.startswith("admin:panel_detail:"))
+async def admin_panel_detail(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    pid = int(call.data.split(":")[2])
+    p = await run_db(get_panel, pid)
+    if not p:
+        await call.answer("❌ پنل پیدا نشد", show_alert=True)
+        return
+        
+    pid, name, ptype, url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path = p
+    connected = "✅" if url else "❌"
+    
+    buttons = [
+        [InlineKeyboardButton(text=f"📝 نام پنل: {name}", callback_data=f"admin:panel_set:{pid}:name")],
+        [InlineKeyboardButton(text=f"{connected} آدرس پنل: {url or 'تنظیم نشده'}", callback_data=f"admin:panel_set:{pid}:panel_url")],
+    ]
+    
+    if ptype.lower() == "pasarguard":
+        buttons.append([
+            InlineKeyboardButton(text=f"👤 نام کاربری: {'✅' if username else '❌'}", callback_data=f"admin:panel_set:{pid}:username"),
+            InlineKeyboardButton(text=f"🔑 رمز عبور: {'✅' if password else '❌'}", callback_data=f"admin:panel_set:{pid}:password")
+        ])
+        buttons.append([InlineKeyboardButton(text=f"📡 Node IDs: {inbound_id or '—'}", callback_data=f"admin:panel_set:{pid}:inbound_id")])
+    else:
+        buttons.append([InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data=f"admin:panel_set:{pid}:api_key")])
+        buttons.append([InlineKeyboardButton(text=f"📡 Inbound ID: {inbound_id or '—'}", callback_data=f"admin:panel_set:{pid}:inbound_id")])
+        
+    buttons.extend([
+        [InlineKeyboardButton(text=f"📂 Panel Path: {panel_path or '/'}", callback_data=f"admin:panel_set:{pid}:panel_path")],
+        [InlineKeyboardButton(text=f"🔌 پورت لینک Sub: {sub_port or 2096}", callback_data=f"admin:panel_set:{pid}:sub_port")],
+        [InlineKeyboardButton(text=f"📎 Sub Path: /{sub_path or 'sub'}", callback_data=f"admin:panel_set:{pid}:sub_path")],
+        [InlineKeyboardButton(text="📋 دریافت لیست Inbound/Node ها", callback_data=f"admin:panel_inbounds:{pid}")],
+        [InlineKeyboardButton(text="🔌 تست اتصال", callback_data=f"admin:panel_test:{pid}")],
+        [InlineKeyboardButton(text="🗑 حذف کامل این پنل", callback_data=f"admin:panel_delete:{pid}")],
+        [InlineKeyboardButton(text="🔙 برگشت به لیست پنل‌ها", callback_data="admin:panel_config")],
+    ])
+    
+    await call.message.edit_text(f"⚙️ تنظیمات سرور/پنل [{name}]:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await call.answer()
 
 @router.callback_query(F.data.startswith("admin:panel_set:"))
 async def admin_panel_set_field(call: types.CallbackQuery, state: FSMContext):
-    if not is_admin(call.from_user.id):
-        return
-    field = call.data.split(":")[2]
-    await state.set_state(AdminPanelConfig.entering_value)
-    await state.update_data(panel_field=field)
+    if not is_admin(call.from_user.id): return
+    parts = call.data.split(":")
+    pid = int(parts[2])
+    field = parts[3]
+    
+    await state.set_state(AdminPanelEdit.entering_value)
+    await state.update_data(panel_id=pid, panel_field=field)
+    
     prompts = {
+        "name":        "📝 نام جدید برای این پنل وارد کن:",
         "panel_url":   "🌐 آدرس پنل رو وارد کن:\nمثال: https://1.2.3.4:2053",
         "api_key":     "🔑 API Key پنل رو وارد کن:",
-        "inbound_id":  "📡 شماره Inbound ID رو وارد کن (عدد):",
+        "username":    "👤 نام کاربری (Username) پنل رو وارد کن:",
+        "password":    "🔑 رمز عبور (Password) پنل رو وارد کن:",
+        "inbound_id":  "📡 شماره Inbound ID (یا Node ID در پاسارگارد) رو وارد کن:\n(اگه در پاسارگارد چندتاس با کاما جدا کن مثل 1,2):",
         "panel_path":  "📂 Panel Path رو وارد کن (پیش‌فرض خالی):\nمثال: /panel یا /skip برای خالی:",
         "sub_port":    "🔌 پورت لینک Sub رو وارد کن:\nمثال: 2096 (یا /skip اگه همون پورت پنله):",
         "sub_path":    "📎 Sub Path رو وارد کن (پیش‌فرض: sub):\nمثال: sub یا subscription:",
@@ -1098,18 +1246,15 @@ async def admin_panel_set_field(call: types.CallbackQuery, state: FSMContext):
     await call.message.answer(prompts.get(field, "مقدار جدید رو وارد کن:"))
     await call.answer()
 
-
-@router.message(AdminPanelConfig.entering_value)
+@router.message(AdminPanelEdit.entering_value)
 async def admin_panel_save_field(message: types.Message, state: FSMContext):
     data = await state.get_data()
+    pid = data["panel_id"]
     field = data["panel_field"]
     raw = message.text.strip()
 
     if field == "inbound_id":
-        if not raw.isdigit():
-            await message.answer("❌ فقط عدد:")
-            return
-        value = int(raw)
+        value = raw.strip()
     elif field == "panel_path":
         value = "" if raw == "/skip" else raw
     elif field == "sub_port":
@@ -1123,87 +1268,128 @@ async def admin_panel_save_field(message: types.Message, state: FSMContext):
     elif field == "sub_path":
         value = "sub" if raw == "/skip" else raw.strip("/")
     elif field == "panel_url":
-        # اگه URL شامل path بود (مثلاً https://domain:2083/abcXYZ) خودکار جدا کن
         from urllib.parse import urlparse
         parsed = urlparse(raw.rstrip("/"))
-        # base: scheme + host + port
         base = f"{parsed.scheme}://{parsed.netloc}"
         path = parsed.path.rstrip("/")
         value = base
-        # اگه path داشت، panel_path رو هم آپدیت کن
         if path:
-            # 🐛 باگ قبلی: اینجا فقط panel_path ذخیره می‌شد و بلافاصله return
-            # می‌زد — یعنی panel_url (همون base، که PanelClient هر درخواستی
-            # رو باهاش می‌سازه) هیچ‌وقت ذخیره نمی‌شد و اتصال پنل عملاً بی‌فایده
-            # می‌موند مگر ادمین یه بار دیگه بدون path دوباره واردش می‌کرد.
-            # الان هر دو مقدار با هم توی یه UPDATE ذخیره می‌شن.
-            await run_db(update_panel_config, panel_url=base, panel_path=path)
+            await run_db(update_panel_field, pid, "panel_url", base)
+            await run_db(update_panel_field, pid, "panel_path", path)
             await message.answer(
                 f"✅ آدرس ذخیره شد.\n"
                 f"🌐 Base URL: {base}\n"
                 f"📂 Panel Path: {path}\n"
                 f"(panel_path هم خودکار تنظیم شد)"
             )
-            from panel import invalidate_panel_cache
-            invalidate_panel_cache()
+            invalidate_panel_cache(pid)
             await state.clear()
             return
     else:
         value = raw
 
-    await run_db(update_panel_config, **{field: value})
-    from panel import invalidate_panel_cache
-    invalidate_panel_cache()
+    await run_db(update_panel_field, pid, field, value)
+    invalidate_panel_cache(pid)
     await state.clear()
     await message.answer("✅ ذخیره شد.", reply_markup=home_button_kb())
 
-
-@router.callback_query(F.data == "admin:panel_test")
+@router.callback_query(F.data.startswith("admin:panel_test:"))
 async def admin_panel_test(call: types.CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return
+    if not is_admin(call.from_user.id): return
+    pid = int(call.data.split(":")[2])
+    
     await call.message.edit_text("🔌 در حال تست اتصال...")
-    ok, msg = await test_panel_connection()
-    cfg = await run_db(get_panel_config)
-    await call.message.edit_text(
-        f"{'✅' if ok else '❌'} {msg}",
-        reply_markup=panel_config_kb(cfg)
-    )
+    ok, msg = await test_panel_connection(pid)
+    
+    # Reload detail keyboard
+    p = await run_db(get_panel, pid)
+    if not p:
+        await call.message.edit_text("پنل حذف شده.")
+        return
+    _, name, ptype, url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path = p
+    connected = "✅" if url else "❌"
+    
+    buttons = [
+        [InlineKeyboardButton(text=f"📝 نام پنل: {name}", callback_data=f"admin:panel_set:{pid}:name")],
+        [InlineKeyboardButton(text=f"{connected} آدرس پنل: {url or 'تنظیم نشده'}", callback_data=f"admin:panel_set:{pid}:panel_url")],
+    ]
+    if ptype.lower() == "pasarguard":
+        buttons.append([
+            InlineKeyboardButton(text=f"👤 نام کاربری: {'✅' if username else '❌'}", callback_data=f"admin:panel_set:{pid}:username"),
+            InlineKeyboardButton(text=f"🔑 رمز عبور: {'✅' if password else '❌'}", callback_data=f"admin:panel_set:{pid}:password")
+        ])
+        buttons.append([InlineKeyboardButton(text=f"📡 Node IDs: {inbound_id or '—'}", callback_data=f"admin:panel_set:{pid}:inbound_id")])
+    else:
+        buttons.append([InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data=f"admin:panel_set:{pid}:api_key")])
+        buttons.append([InlineKeyboardButton(text=f"📡 Inbound ID: {inbound_id or '—'}", callback_data=f"admin:panel_set:{pid}:inbound_id")])
+        
+    buttons.extend([
+        [InlineKeyboardButton(text=f"📂 Panel Path: {panel_path or '/'}", callback_data=f"admin:panel_set:{pid}:panel_path")],
+        [InlineKeyboardButton(text=f"🔌 پورت لینک Sub: {sub_port or 2096}", callback_data=f"admin:panel_set:{pid}:sub_port")],
+        [InlineKeyboardButton(text=f"📎 Sub Path: /{sub_path or 'sub'}", callback_data=f"admin:panel_set:{pid}:sub_path")],
+        [InlineKeyboardButton(text="📋 دریافت لیست Inbound/Node ها", callback_data=f"admin:panel_inbounds:{pid}")],
+        [InlineKeyboardButton(text="🔌 تست اتصال", callback_data=f"admin:panel_test:{pid}")],
+        [InlineKeyboardButton(text="🗑 حذف کامل این پنل", callback_data=f"admin:panel_delete:{pid}")],
+        [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:panel_config")],
+    ])
+    
+    await call.message.edit_text(f"{'✅' if ok else '❌'} {msg}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await call.answer()
 
-
-@router.callback_query(F.data == "admin:panel_inbounds")
+@router.callback_query(F.data.startswith("admin:panel_inbounds:"))
 async def admin_panel_inbounds(call: types.CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return
+    if not is_admin(call.from_user.id): return
+    pid = int(call.data.split(":")[2])
+    
     await call.message.edit_text("📋 در حال دریافت لیست...")
-    inbounds = await get_inbound_list()
+    inbounds = await get_inbound_list(pid)
+    
+    back_btn = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 برگشت", callback_data=f"admin:panel_detail:{pid}")]])
+    
     if not inbounds:
-        await call.message.edit_text(
-            "❌ نتونستم inbound ها رو بگیرم.\nاتصال پنل رو چک کن.",
-            reply_markup=back_kb("admin:panel_config")
-        )
+        await call.message.edit_text("❌ نتونستم دیتا رو بگیرم.\nاتصال پنل رو چک کن.", reply_markup=back_btn)
         await call.answer()
         return
 
-    text = "📋 لیست Inbound ها:\n\n"
+    text = "📋 لیست Inbound/Node ها:\n\n"
     for ib in inbounds:
-        text += f"🔹 ID: {ib.get('id')} | {ib.get('remark','—')} | {ib.get('protocol','—')} | پورت: {ib.get('port','—')}\n"
-    text += "\nاز این IDها برای تنظیم Inbound ID استفاده کن."
-    await call.message.edit_text(text, reply_markup=back_kb("admin:panel_config"))
+        protocol = ib.get('protocol', '—')
+        port = ib.get('port', '—')
+        protocol_str = f" | {protocol}" if protocol != '—' else ""
+        port_str = f" | پورت: {port}" if port != '—' else ""
+        text += f"🔹 ID: {ib.get('id')} | {ib.get('remark','—')}{protocol_str}{port_str}\n"
+    text += "\nاز این IDها برای تنظیم Inbound/Node ID استفاده کن."
+    await call.message.edit_text(text, reply_markup=back_btn)
     await call.answer()
+
+@router.callback_query(F.data.startswith("admin:panel_delete:"))
+async def admin_panel_delete(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    pid = int(call.data.split(":")[2])
+    
+    # حذف پنل
+    await run_db(delete_panel, pid)
+    invalidate_panel_cache(pid)
+    await call.answer("🗑 پنل حذف شد!", show_alert=True)
+    
+    # برگشت به لیست پنل‌ها
+    panels = await run_db(get_all_panels)
+    buttons = []
+    if panels:
+        for p in panels:
+            p_id, name, ptype, url = p
+            status = "✅" if url else "⚠️"
+            buttons.append([InlineKeyboardButton(text=f"{status} {name} ({ptype.upper()})", callback_data=f"admin:panel_detail:{p_id}")])
+            
+    buttons.append([InlineKeyboardButton(text="➕ افزودن سرور/پنل جدید", callback_data="admin:panel_add")])
+    buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
+    
+    await call.message.edit_text("⚙️ مدیریت سرورها و پنل‌های VPN:\nیک پنل را برای ویرایش انتخاب کرده یا پنل جدید بسازید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
 # ================================================================
 # PARTNER MANAGEMENT
 # ================================================================
-
-from db import (
-    get_all_partners, get_partner, add_partner, remove_partner,
-    get_all_categories, set_category_visibility
-)
-from states import AdminAddPartnerManual
-
 
 def partners_kb(partners):
     buttons = []
@@ -1365,7 +1551,6 @@ async def admin_partner_email_set_start(call: types.CallbackQuery, state: FSMCon
 @router.message(AdminPartnerEmailNaming.waiting_emoji)
 async def admin_partner_email_set_emoji(message: types.Message, state: FSMContext):
     emoji = None if message.text.strip() == "/skip" else message.text.strip()
-    # محدودیت ساده روی طول ایموجی، تا رشته‌ای غیرمنتظره و طولانی وارد نشه
     if emoji and len(emoji) > 8:
         await message.answer("❌ خیلی طولانیه، یک ایموجی کوتاه وارد کن یا /skip بزن:")
         return
@@ -1415,7 +1600,6 @@ async def admin_partner_email_reset(call: types.CallbackQuery):
     user_id = int(call.data.split(":")[2])
     await run_db(reset_partner_email_counter, user_id)
     await call.answer("✅ شمارنده صفر شد", show_alert=True)
-    # بازگشت به منوی نام‌گذاری با وضعیت به‌روزشده
     p = await run_db(get_partner, user_id)
     _, uid, _, _, _, _, _, email_prefix, email_emoji, email_counter = p
     sep = "─" * 22
@@ -1485,10 +1669,6 @@ async def admin_partner_purchases(call: types.CallbackQuery):
 
     footer = f"{sep}\n💰 مجموع: {total:,} تومان"
 
-    # این هندلر با edit_text کار می‌کنه (نه ارسال چند پیام جدا)، پس اگه تعداد
-    # خریدها زیاد باشه و از سقف ۴۰۹۶ کاراکتری تلگرام رد بشه، فقط اولین chunk رو
-    # نشون می‌دیم و یک یادداشت اضافه می‌کنیم — برای دیدن کامل، کاربر می‌تونه از
-    # «📋 خریدهای من» خودش (که چندپیامیه) استفاده کنه.
     chunks = chunk_blocks(header, blocks, footer)
     text = chunks[0]
     if len(chunks) > 1:
@@ -1607,7 +1787,6 @@ def _vis_label(v):
     return "👥 همه"
 
 def _vis_next(v):
-    # چرخش: all → partners → users → custom → all
     if v in ("all", None):
         return "partners"
     if v == "partners":
@@ -1634,7 +1813,6 @@ def category_visibility_kb(categories):
                     callback_data=f"admin:cat_custom_users:{cid}"
                 )
             ])
-        # مسدودسازی مستقل از حالت visibility است — روی هر دسته (حتی 'all') قابل استفاده‌ست
         buttons.append([
             InlineKeyboardButton(
                 text=f"   └ 🚫 مسدودسازی برای کاربر خاص «{name}»",
@@ -1646,7 +1824,6 @@ def category_visibility_kb(categories):
 
 
 def _get_cats_for_vis():
-    """sync helper — فقط از run_db صدا زده بشه"""
     from db import connect as _conn
     conn = _conn()
     cur = conn.cursor()
@@ -1730,7 +1907,6 @@ def custom_access_kb(cat_id, users):
 
 
 def category_block_kb(cat_id, users):
-    """کیبورد لیست کاربرانی که این دسته‌بندی خاص برایشان مسدود شده (deny-list)"""
     buttons = []
     for uid, phone in users:
         label = f"🚫 {uid}"
@@ -1786,12 +1962,10 @@ async def admin_cat_custom_add_save(message: types.Message, state: FSMContext):
 
     for line in lines:
         if line.isdigit() and len(line) >= 6 and not line.startswith("09"):
-            # آیدی عددی تلگرام
             uid = int(line)
             await run_db(add_category_custom_user, cat_id, uid)
             added.append(str(uid))
         elif line.startswith("09") and len(line) == 11:
-            # شماره موبایل — پیدا کردن آیدی
             uid = await run_db(find_user_id_by_phone, line)
             if uid:
                 await run_db(add_category_custom_user, cat_id, uid)
@@ -2298,8 +2472,6 @@ async def admin_naming_set_prefix_save(message: types.Message, state: FSMContext
     counter = cfg[1] if cfg else 0
     next_number = counter + 1
 
-    # به‌جای فرستادن یک پیام تایید جدید، همون پیام «پیشوند رو وارد کن» با نتیجه
-    # ادیت می‌شه — چت ادمین با هر تنظیم، پیام جدید اضافه نمی‌کنه
     await finish_prompt(
         message, state,
         f"✅ پیشوند تنظیم شد: {sanitized}\n"
@@ -2413,8 +2585,6 @@ async def admin_backup_set_token_save(message: types.Message, state: FSMContext)
     await run_db(update_backup_config, backup_bot_token=token)
     await state.clear()
 
-    # توکن کامل رو دوباره توی چت نمایش نمی‌دیم (فقط یه نسخه‌ی ماسک‌شده)، تا در
-    # صورت اسکرول بالا رفتن چت، توکن کامل راحت لو نره
     masked = f"{token[:6]}...{token[-4:]}"
     await message.answer(
         f"✅ توکن ذخیره شد: {masked}\n\n"
@@ -2849,7 +3019,7 @@ async def admin_pm_card_edit_save(message: types.Message, state: FSMContext):
 
 
 # ================================================================
-# TEXT CUSTOMIZATION (نام برند + متن خوش‌آمدگویی /start + متن صفحه‌ی خانه)
+# TEXT CUSTOMIZATION 
 # ================================================================
 
 from db import (
@@ -2902,7 +3072,7 @@ async def admin_brand_set_save(message: types.Message, state: FSMContext):
         await message.answer("❌ نمی‌تونه خالی باشه. دوباره وارد کن:")
         return
     if len(name) > 40:
-        await message.answer("❌ خیلی طولانیه (حداکثر ۴۰ کاراکتر). دوباره وارد کن:")
+        await message.answer("❌ خیلی طولانیه (حداکثر ۴0 کاراکتر). دوباره وارد کن:")
         return
 
     await run_db(set_brand_name, name)
@@ -2950,10 +3120,6 @@ async def admin_welcome_set_save(message: types.Message, state: FSMContext):
         await message.answer("❌ خیلی طولانیه (سقف پیام تلگرام رو رد می‌کنه). کوتاه‌ترش کن:")
         return
 
-    # نکته‌ی امنیتی: عمداً اینجا .format() تست نمی‌کنیم و به کاربر اجازه‌ی هر
-    # placeholder ای رو می‌دیم؛ سمت مصرف (utils.build_welcome_text) با یک
-    # فرمت‌دهنده‌ی امن (try/except) اگه placeholder نامعتبر بود، کل متن خام
-    # رو برمی‌گردونه نه این‌که برای همه‌ی کاربرها کرش کنه.
     await run_db(set_welcome_text, text)
     await finish_prompt(
         message, state,
@@ -3006,7 +3172,7 @@ async def admin_hometext_set_save(message: types.Message, state: FSMContext):
 
 
 # ================================================================
-# SUPPORT INFO (آیدی تلگرام + شماره تماس پشتیبانی)
+# SUPPORT INFO 
 # ================================================================
 
 from db import get_support_username, set_support_username, get_support_phone, set_support_phone

@@ -106,7 +106,9 @@ async def show_invoice(call: types.CallbackQuery):
     if not service:
         await call.answer("❌ سرویس پیدا نشد", show_alert=True)
         return
-    sid, name, desc, price, days, data_gb, is_active, cat_name = service
+    
+    # آپدیت: 9 فیلد برمی‌گردد
+    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id = service
     if not is_active:
         await call.answer("❌ این سرویس فعلاً در دسترس نیست", show_alert=True)
         return
@@ -180,7 +182,8 @@ async def apply_discount_code(message: types.Message, state: FSMContext):
         return
 
     service = await run_db(get_service, service_id)
-    sid, name, desc, price, days, data_gb, is_active, cat_name = service
+    # آپدیت: 9 فیلد برمی‌گردد
+    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id = service
 
     if dc_type == "percent":
         discount_amount = int(price * dc_value / 100)
@@ -225,7 +228,8 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
         await call.answer("❌ سرویس پیدا نشد", show_alert=True)
         return
 
-    sid, name, desc, price, days, data_gb, is_active, cat_name = service
+    # آپدیت: 9 فیلد برمی‌گردد
+    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id = service
     user_id = call.from_user.id
 
     success = await run_db(deduct_balance, user_id, final_price)
@@ -261,16 +265,15 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
         f"💰 مبلغ پرداختی: {final_price:,} تومان\n"
         f"🔑 سفارش: #{purchase_id}"
     )
-    await _create_and_send_vpn(bot, user_id, purchase_id, service)
+    await _create_and_send_vpn(bot, user_id, purchase_id, service, panel_id or 1)
 
 
-async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tuple, is_trial: bool = False):
-    sid, name, desc, price, days, data_gb, is_active, cat_name = service
-    # ایمیل (پیشوند برند + شمارنده‌ی اتمیک) و گروه پنل (ادمین/همکار/پیش‌فرض)
-    # با یک تابع مرکزی آماده می‌شن تا منطق تشخیص نوع کاربر یکجا و بدون تکرار بمونه
+async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tuple, panel_id: int = 1, is_trial: bool = False):
+    sid, name, desc, price, days, data_gb, is_active, cat_name, _pid = service
     email, group = await prepare_new_client(user_id)
 
-    result = await create_vpn_account(user_id, email, days, float(data_gb), group=group)
+    # اتصال به پنل مورد نظر
+    result = await create_vpn_account(user_id, email, days, float(data_gb), group=group, panel_id=panel_id)
 
     if result:
         await run_db(save_vpn_account,
@@ -283,20 +286,27 @@ async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tup
             purchase_id=purchase_id,
             is_trial=is_trial,
             sub_id=result.get("sub_id"),
-            sub_url=result.get("sub_url")
+            sub_url=result.get("sub_url"),
+            panel_id=panel_id
         )
         expire_date = datetime.datetime.fromtimestamp(result["expire_time"] / 1000).strftime('%Y-%m-%d')
         sep = "─" * 22
-        # HTML به‌جای Markdown — همون دلیل امنیتی که در handlers/user.py توضیح داده شد
         import html
         safe_sub_url = html.escape(result["sub_url"])
+        safe_email = html.escape(result["email"])
+        
+        # دریافت موجودی جدید کاربر
+        new_bal = await run_db(get_balance, user_id)
+        
         caption = (
             f"✅ اکانت VPN شما آماده شد!\n{sep}\n"
+            f"👤 نام کاربری: <code>{safe_email}</code>\n"
             f"🔗 لینک سابسکریپشن:\n"
             f"<code>{safe_sub_url}</code>\n"
             f"{sep}\n"
             f"📅 انقضا: {expire_date}\n"
-            f"{format_data(data_gb)}\n{sep}\n"
+            f"📶 حجم: {format_data(data_gb)}\n{sep}\n"
+            f"👛 موجودی جدید: {new_bal:,} تومان\n{sep}\n"
             f"⚙️ این لینک رو داخل نرم‌افزار VPN خودت وارد کن."
         )
         qr_buf = _make_qr(result["sub_url"])
@@ -323,7 +333,8 @@ async def confirm_buy(call: types.CallbackQuery, bot: Bot):
     if not service:
         await call.answer("❌ سرویس پیدا نشد", show_alert=True)
         return
-    sid, name, desc, price, days, data_gb, is_active, cat_name = service
+    # آپدیت: 9 فیلد برمی‌گردد
+    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id = service
     user_id = call.from_user.id
     success = await run_db(deduct_balance, user_id, price)
     if not success:
@@ -356,7 +367,7 @@ async def confirm_buy(call: types.CallbackQuery, bot: Bot):
         f"💰 مبلغ: {price:,} تومان\n"
         f"🔑 سفارش: #{purchase_id}"
     )
-    await _create_and_send_vpn(bot, user_id, purchase_id, service)
+    await _create_and_send_vpn(bot, user_id, purchase_id, service, panel_id or 1)
 
 
 async def _handle_purchase_referral_reward(bot: Bot, buyer_id: int, amount_paid: int):
@@ -654,7 +665,22 @@ async def custom_plan_confirm(call: types.CallbackQuery, state: FSMContext, bot:
         f"🔑 سفارش: #{purchase_id}"
     )
 
-    # ساخت اکانت با inbound های مخصوص این گروه
+    # گرفتن Panel_id مربوط به این دسته‌بندی
+    def _get_panel_id_for_group(g_id):
+        from db import connect as _conn
+        conn = _conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT c.panel_id FROM custom_plan_groups g
+            JOIN categories c ON g.category_id = c.id
+            WHERE g.id=%s
+        """, (g_id,))
+        r = cur.fetchone()
+        conn.close()
+        return r[0] if r and r[0] else 1
+    
+    panel_id = await run_db(_get_panel_id_for_group, group_id)
+
     inbound_ids = None
     if inbound_ids_str:
         try:
@@ -662,17 +688,15 @@ async def custom_plan_confirm(call: types.CallbackQuery, state: FSMContext, bot:
         except Exception:
             inbound_ids = None
 
-    await _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, inbound_ids)
+    await _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, inbound_ids, panel_id)
 
 
-async def _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, inbound_ids):
+async def _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, inbound_ids, panel_id):
     from panel import get_panel_client
 
-    # ایمیل و گروه پنل با همون تابع مرکزی که برای خرید عادی و تست رایگان هم
-    # استفاده می‌شه آماده می‌شن، تا شمارنده‌ی برند و منطق گروه‌بندی یکپارچه بمونه
     email, group = await prepare_new_client(user_id)
 
-    client = await get_panel_client()
+    client = await get_panel_client(panel_id)
     result = None
     if client:
         result = await client.add_client(email, days, gb, inbound_ids=inbound_ids)
@@ -690,22 +714,29 @@ async def _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, 
             purchase_id=purchase_id,
             is_trial=False,
             sub_id=result.get("sub_id"),
-            sub_url=result.get("sub_url")
+            sub_url=result.get("sub_url"),
+            panel_id=panel_id
         )
         expire_date = datetime.datetime.fromtimestamp(result["expire_time"] / 1000).strftime('%Y-%m-%d')
         sep = "─" * 22
-        # HTML به‌جای Markdown — همون دلیل امنیتی که در handlers/user.py توضیح داده شد
         import html
         safe_sub_url = html.escape(result["sub_url"])
         safe_service_name = html.escape(service_name)
+        safe_email = html.escape(result["email"])
+        
+        # دریافت موجودی جدید کاربر
+        new_bal = await run_db(get_balance, user_id)
+        
         caption = (
             f"✅ اکانت VPN شما آماده شد!\n{sep}\n"
             f"📦 {safe_service_name}\n"
+            f"👤 نام کاربری: <code>{safe_email}</code>\n\n"
             f"🔗 لینک سابسکریپشن:\n"
             f"<code>{safe_sub_url}</code>\n"
             f"{sep}\n"
             f"📅 انقضا: {expire_date}\n"
-            f"📶 {gb:g} گیگابایت\n{sep}\n"
+            f"📶 حجم: {gb:g} گیگابایت\n{sep}\n"
+            f"👛 موجودی جدید: {new_bal:,} تومان\n{sep}\n"
             f"⚙️ این لینک رو داخل نرم‌افزار VPN خودت وارد کن."
         )
         qr_buf = _make_qr(result["sub_url"])

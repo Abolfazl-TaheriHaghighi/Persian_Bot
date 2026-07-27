@@ -208,3 +208,7 @@ class ServiceNote(StatesGroup):
 class AdminSupportInfo(StatesGroup):
     waiting_username = State()
     waiting_phone = State()
+
+class AdminEditCategory(StatesGroup):
+    entering_name = State()
+    choosing_panel = State()
