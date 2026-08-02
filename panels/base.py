@@ -17,7 +17,10 @@ class BasePanelClient:
     def __init__(self, cfg: tuple):
         # cfg tuple index mapping from db.get_panel(panel_id):
         # 0: id, 1: name, 2: panel_type, 3: panel_url, 4: auth_type, 5: username,
-        # 6: password, 7: api_key, 8: inbound_id, 9: panel_path, 10: sub_port, 11: sub_path
+        # 6: password, 7: api_key, 8: panel_path, 9: sub_port, 10: sub_path
+        # نکته: ستون inbound_id عمداً حذف شده — انتخاب Inbound (در 3x-ui) یا
+        # Node (در PasarGuard) همیشه خودکاره و از تنظیمات پیش‌فرض خودِ پنل
+        # می‌آد، نه یک مقدار دستی که اینجا نگه داشته بشه.
         self.panel_id = cfg[0]
         self.name = cfg[1]
         self.panel_type = cfg[2] or "3x-ui"
@@ -26,10 +29,9 @@ class BasePanelClient:
         self.username = cfg[5]
         self.password = cfg[6]
         self.api_key = cfg[7]
-        self.inbound_id = cfg[8]
-        self.panel_path = cfg[9] or ""
-        self.sub_port = cfg[10] if len(cfg) > 10 and cfg[10] else None
-        self.sub_path = cfg[11] if len(cfg) > 11 and cfg[11] else "sub"
+        self.panel_path = cfg[8] or ""
+        self.sub_port = cfg[9] if len(cfg) > 9 and cfg[9] else None
+        self.sub_path = cfg[10] if len(cfg) > 10 and cfg[10] else "sub"
 
     async def get_inbounds(self) -> list:
         raise NotImplementedError

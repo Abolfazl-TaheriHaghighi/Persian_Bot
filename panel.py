@@ -124,12 +124,11 @@ async def test_panel_connection(panel_id: int = 1) -> tuple[bool, str]:
 
     if panel_type.lower() == "pasarguard":
         client = PasarguardClient(cfg)
-        if not client.username or not client.password:
-            return False, "❌ نام کاربری و رمز عبور برای PasarGuard وارد نشده"
     else:
         client = ThreeXUIClient(cfg)
-        if not client.api_key:
-            return False, "❌ API Key وارد نشده"
+
+    if not client.api_key:
+        return False, "❌ API Key وارد نشده"
 
     inbounds = await client.get_inbounds()
     _cache.invalidate(panel_id)

@@ -246,7 +246,7 @@ async def admin_add_cat_start(call: types.CallbackQuery, state: FSMContext):
 @router.message(AdminAddCategory.name)
 async def admin_add_cat_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text.strip())
-    
+
     panels = await run_db(get_all_panels)
     if not panels:
         await state.update_data(panel_id=None)
@@ -258,7 +258,7 @@ async def admin_add_cat_name(message: types.Message, state: FSMContext):
     for p in panels:
         buttons.append([InlineKeyboardButton(text=f"🖥 {p[1]} ({p[2].upper()})", callback_data=f"admin:cat_set_panel:{p[0]}")])
     buttons.append([InlineKeyboardButton(text="❌ بدون اتصال به پنل", callback_data="admin:cat_set_panel:0")])
-    
+
     await state.set_state(AdminAddCategoryPanel.waiting)
     await message.answer("🖥 این دسته‌بندی قراره اکانت‌هاش رو روی کدوم سرور/پنل بسازه؟", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
@@ -281,7 +281,7 @@ async def admin_add_cat_emoji(message: types.Message, state: FSMContext):
         reply_markup=home_button_kb()
     )
 
-    
+
 # ================================================================
 # SERVICES
 # ================================================================
@@ -1137,22 +1137,78 @@ async def admin_ch_invite_input(message: types.Message, state: FSMContext):
 
 from panel import test_panel_connection, get_inbound_list, invalidate_panel_cache
 
+
+def _panel_terms(panel_type: str) -> dict:
+    """
+    اصطلاح صحیح بر اساس نوع پنل — 3x-ui فقط مفهوم «Inbound» رو داره (اصلاً
+    چیزی به اسم Node توش وجود نداره) و PasarGuard دقیقاً برعکس، فقط «Node»
+    داره. همه‌ی متن‌ها و دکمه‌های مربوط به این بخش از همین دیکشنری خونده
+    می‌شن تا کاربر با اصطلاح اشتباه/غیرمرتبط با نوع پنلش گیج نشه.
+    """
+    if (panel_type or "").lower() == "pasarguard":
+        return {
+            "unit_fa": "نود",
+            "list_button": "📋 دریافت لیست نودها",
+            "list_title": "📋 لیست نودهای این پنل",
+            "credential_hint": "بعدش از «🔑 API Key» کلید API پنل رو وارد کن (از بخش API Keys خودِ پنل PasarGuard می‌سازیش).",
+        }
+    return {
+        "unit_fa": "اینباند",
+        "list_button": "📋 دریافت لیست اینباندها",
+        "list_title": "📋 لیست اینباندهای این پنل",
+        "credential_hint": "بعدش از «🔑 API Key» کلید API پنل رو وارد کن.",
+    }
+
+
+def _build_panel_detail_view(p) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    ساخت متن + کیبورد صفحه‌ی جزئیات یک پنل — بین admin_panel_detail و
+    admin_panel_test (بعد از تست اتصال) مشترکه تا کد و متن‌ها یکپارچه بمونن
+    و برای هر تغییر فقط یک‌جا لازم باشه ادیت بشه.
+    دکمه‌های مربوط به «Inbound ID / Node ID دستی» عمداً اینجا وجود ندارن —
+    چون این مقدار همیشه به‌صورت خودکار از خودِ پنل خونده می‌شه (برای 3x-ui
+    همه‌ی inbound های فعال، برای PasarGuard تنظیمات پیش‌فرض پنل).
+    """
+    pid, name, ptype, url, auth_type, username, password, api_key, panel_path, sub_port, sub_path = p
+    terms = _panel_terms(ptype)
+    connected = "✅" if url else "❌"
+
+    buttons = [
+        [InlineKeyboardButton(text=f"📝 نام پنل: {name}", callback_data=f"admin:panel_set:{pid}:name")],
+        [InlineKeyboardButton(text=f"{connected} آدرس پنل: {url or 'تنظیم نشده'}", callback_data=f"admin:panel_set:{pid}:panel_url")],
+        [InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data=f"admin:panel_set:{pid}:api_key")],
+    ]
+
+    buttons.extend([
+        [InlineKeyboardButton(text=f"📂 Panel Path: {panel_path or '/'}", callback_data=f"admin:panel_set:{pid}:panel_path")],
+        [InlineKeyboardButton(text=f"🔌 پورت لینک Sub: {sub_port or 2096}", callback_data=f"admin:panel_set:{pid}:sub_port")],
+        [InlineKeyboardButton(text=f"📎 Sub Path: /{sub_path or 'sub'}", callback_data=f"admin:panel_set:{pid}:sub_path")],
+        [InlineKeyboardButton(text=terms["list_button"], callback_data=f"admin:panel_inbounds:{pid}")],
+        [InlineKeyboardButton(text="🔌 تست اتصال", callback_data=f"admin:panel_test:{pid}")],
+        [InlineKeyboardButton(text="🗑 حذف کامل این پنل", callback_data=f"admin:panel_delete:{pid}")],
+        [InlineKeyboardButton(text="🔙 برگشت به لیست پنل‌ها", callback_data="admin:panel_config")],
+    ])
+
+    text = f"⚙️ تنظیمات سرور/پنل [{name}] — نوع: {ptype.upper()}"
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 @router.callback_query(F.data == "admin:panel_config")
 async def admin_panels_list(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     panels = await run_db(get_all_panels)
-    
+
     buttons = []
     if panels:
         for p in panels:
             pid, name, ptype, url = p
             status = "✅" if url else "⚠️"
             buttons.append([InlineKeyboardButton(text=f"{status} {name} ({ptype.upper()})", callback_data=f"admin:panel_detail:{pid}")])
-            
+
     buttons.append([InlineKeyboardButton(text="➕ افزودن سرور/پنل جدید", callback_data="admin:panel_add")])
     buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
-    
+
     text = "⚙️ مدیریت سرورها و پنل‌های VPN:\nیک پنل را برای ویرایش انتخاب کرده یا پنل جدید بسازید:"
     await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await call.answer()
@@ -1180,7 +1236,14 @@ async def admin_panel_add_type(call: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     pid = await run_db(add_panel, data["panel_name"], ptype)
     await state.clear()
-    await call.message.answer(f"✅ پنل {data['panel_name']} اضافه شد!\nحالا می‌تونی از لیست، تنظیماتش رو کامل کنی.", reply_markup=home_button_kb())
+
+    terms = _panel_terms(ptype)
+    await call.message.answer(
+        f"✅ پنل {data['panel_name']} ({ptype.upper()}) اضافه شد!\n\n"
+        f"حالا از لیست روش کلیک کن، اول «آدرس پنل» رو تنظیم کن.\n"
+        f"{terms['credential_hint']}",
+        reply_markup=home_button_kb()
+    )
 
 @router.callback_query(F.data.startswith("admin:panel_detail:"))
 async def admin_panel_detail(call: types.CallbackQuery):
@@ -1190,36 +1253,9 @@ async def admin_panel_detail(call: types.CallbackQuery):
     if not p:
         await call.answer("❌ پنل پیدا نشد", show_alert=True)
         return
-        
-    pid, name, ptype, url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path = p
-    connected = "✅" if url else "❌"
-    
-    buttons = [
-        [InlineKeyboardButton(text=f"📝 نام پنل: {name}", callback_data=f"admin:panel_set:{pid}:name")],
-        [InlineKeyboardButton(text=f"{connected} آدرس پنل: {url or 'تنظیم نشده'}", callback_data=f"admin:panel_set:{pid}:panel_url")],
-    ]
-    
-    if ptype.lower() == "pasarguard":
-        buttons.append([
-            InlineKeyboardButton(text=f"👤 نام کاربری: {'✅' if username else '❌'}", callback_data=f"admin:panel_set:{pid}:username"),
-            InlineKeyboardButton(text=f"🔑 رمز عبور: {'✅' if password else '❌'}", callback_data=f"admin:panel_set:{pid}:password")
-        ])
-        buttons.append([InlineKeyboardButton(text=f"📡 Node IDs: {inbound_id or '—'}", callback_data=f"admin:panel_set:{pid}:inbound_id")])
-    else:
-        buttons.append([InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data=f"admin:panel_set:{pid}:api_key")])
-        buttons.append([InlineKeyboardButton(text=f"📡 Inbound ID: {inbound_id or '—'}", callback_data=f"admin:panel_set:{pid}:inbound_id")])
-        
-    buttons.extend([
-        [InlineKeyboardButton(text=f"📂 Panel Path: {panel_path or '/'}", callback_data=f"admin:panel_set:{pid}:panel_path")],
-        [InlineKeyboardButton(text=f"🔌 پورت لینک Sub: {sub_port or 2096}", callback_data=f"admin:panel_set:{pid}:sub_port")],
-        [InlineKeyboardButton(text=f"📎 Sub Path: /{sub_path or 'sub'}", callback_data=f"admin:panel_set:{pid}:sub_path")],
-        [InlineKeyboardButton(text="📋 دریافت لیست Inbound/Node ها", callback_data=f"admin:panel_inbounds:{pid}")],
-        [InlineKeyboardButton(text="🔌 تست اتصال", callback_data=f"admin:panel_test:{pid}")],
-        [InlineKeyboardButton(text="🗑 حذف کامل این پنل", callback_data=f"admin:panel_delete:{pid}")],
-        [InlineKeyboardButton(text="🔙 برگشت به لیست پنل‌ها", callback_data="admin:panel_config")],
-    ])
-    
-    await call.message.edit_text(f"⚙️ تنظیمات سرور/پنل [{name}]:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    text, kb = _build_panel_detail_view(p)
+    await call.message.edit_text(text, reply_markup=kb)
     await call.answer()
 
 @router.callback_query(F.data.startswith("admin:panel_set:"))
@@ -1228,17 +1264,14 @@ async def admin_panel_set_field(call: types.CallbackQuery, state: FSMContext):
     parts = call.data.split(":")
     pid = int(parts[2])
     field = parts[3]
-    
+
     await state.set_state(AdminPanelEdit.entering_value)
     await state.update_data(panel_id=pid, panel_field=field)
-    
+
     prompts = {
         "name":        "📝 نام جدید برای این پنل وارد کن:",
         "panel_url":   "🌐 آدرس پنل رو وارد کن:\nمثال: https://1.2.3.4:2053",
         "api_key":     "🔑 API Key پنل رو وارد کن:",
-        "username":    "👤 نام کاربری (Username) پنل رو وارد کن:",
-        "password":    "🔑 رمز عبور (Password) پنل رو وارد کن:",
-        "inbound_id":  "📡 شماره Inbound ID (یا Node ID در پاسارگارد) رو وارد کن:\n(اگه در پاسارگارد چندتاس با کاما جدا کن مثل 1,2):",
         "panel_path":  "📂 Panel Path رو وارد کن (پیش‌فرض خالی):\nمثال: /panel یا /skip برای خالی:",
         "sub_port":    "🔌 پورت لینک Sub رو وارد کن:\nمثال: 2096 (یا /skip اگه همون پورت پنله):",
         "sub_path":    "📎 Sub Path رو وارد کن (پیش‌فرض: sub):\nمثال: sub یا subscription:",
@@ -1253,9 +1286,7 @@ async def admin_panel_save_field(message: types.Message, state: FSMContext):
     field = data["panel_field"]
     raw = message.text.strip()
 
-    if field == "inbound_id":
-        value = raw.strip()
-    elif field == "panel_path":
+    if field == "panel_path":
         value = "" if raw == "/skip" else raw
     elif field == "sub_port":
         if raw == "/skip":
@@ -1297,68 +1328,50 @@ async def admin_panel_save_field(message: types.Message, state: FSMContext):
 async def admin_panel_test(call: types.CallbackQuery):
     if not is_admin(call.from_user.id): return
     pid = int(call.data.split(":")[2])
-    
+
     await call.message.edit_text("🔌 در حال تست اتصال...")
     ok, msg = await test_panel_connection(pid)
-    
-    # Reload detail keyboard
+
     p = await run_db(get_panel, pid)
     if not p:
         await call.message.edit_text("پنل حذف شده.")
         return
-    _, name, ptype, url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path = p
-    connected = "✅" if url else "❌"
-    
-    buttons = [
-        [InlineKeyboardButton(text=f"📝 نام پنل: {name}", callback_data=f"admin:panel_set:{pid}:name")],
-        [InlineKeyboardButton(text=f"{connected} آدرس پنل: {url or 'تنظیم نشده'}", callback_data=f"admin:panel_set:{pid}:panel_url")],
-    ]
-    if ptype.lower() == "pasarguard":
-        buttons.append([
-            InlineKeyboardButton(text=f"👤 نام کاربری: {'✅' if username else '❌'}", callback_data=f"admin:panel_set:{pid}:username"),
-            InlineKeyboardButton(text=f"🔑 رمز عبور: {'✅' if password else '❌'}", callback_data=f"admin:panel_set:{pid}:password")
-        ])
-        buttons.append([InlineKeyboardButton(text=f"📡 Node IDs: {inbound_id or '—'}", callback_data=f"admin:panel_set:{pid}:inbound_id")])
-    else:
-        buttons.append([InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data=f"admin:panel_set:{pid}:api_key")])
-        buttons.append([InlineKeyboardButton(text=f"📡 Inbound ID: {inbound_id or '—'}", callback_data=f"admin:panel_set:{pid}:inbound_id")])
-        
-    buttons.extend([
-        [InlineKeyboardButton(text=f"📂 Panel Path: {panel_path or '/'}", callback_data=f"admin:panel_set:{pid}:panel_path")],
-        [InlineKeyboardButton(text=f"🔌 پورت لینک Sub: {sub_port or 2096}", callback_data=f"admin:panel_set:{pid}:sub_port")],
-        [InlineKeyboardButton(text=f"📎 Sub Path: /{sub_path or 'sub'}", callback_data=f"admin:panel_set:{pid}:sub_path")],
-        [InlineKeyboardButton(text="📋 دریافت لیست Inbound/Node ها", callback_data=f"admin:panel_inbounds:{pid}")],
-        [InlineKeyboardButton(text="🔌 تست اتصال", callback_data=f"admin:panel_test:{pid}")],
-        [InlineKeyboardButton(text="🗑 حذف کامل این پنل", callback_data=f"admin:panel_delete:{pid}")],
-        [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:panel_config")],
-    ])
-    
-    await call.message.edit_text(f"{'✅' if ok else '❌'} {msg}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    _, kb = _build_panel_detail_view(p)
+    await call.message.edit_text(f"{'✅' if ok else '❌'} {msg}", reply_markup=kb)
     await call.answer()
 
 @router.callback_query(F.data.startswith("admin:panel_inbounds:"))
 async def admin_panel_inbounds(call: types.CallbackQuery):
     if not is_admin(call.from_user.id): return
     pid = int(call.data.split(":")[2])
-    
-    await call.message.edit_text("📋 در حال دریافت لیست...")
+
+    p = await run_db(get_panel, pid)
+    ptype = p[2] if p else "3x-ui"
+    terms = _panel_terms(ptype)
+
+    await call.message.edit_text(f"{terms['list_title']}\n\n⏳ در حال دریافت...")
     inbounds = await get_inbound_list(pid)
-    
+
     back_btn = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 برگشت", callback_data=f"admin:panel_detail:{pid}")]])
-    
+
     if not inbounds:
         await call.message.edit_text("❌ نتونستم دیتا رو بگیرم.\nاتصال پنل رو چک کن.", reply_markup=back_btn)
         await call.answer()
         return
 
-    text = "📋 لیست Inbound/Node ها:\n\n"
+    text = f"{terms['list_title']}:\n\n"
     for ib in inbounds:
         protocol = ib.get('protocol', '—')
         port = ib.get('port', '—')
         protocol_str = f" | {protocol}" if protocol != '—' else ""
         port_str = f" | پورت: {port}" if port != '—' else ""
         text += f"🔹 ID: {ib.get('id')} | {ib.get('remark','—')}{protocol_str}{port_str}\n"
-    text += "\nاز این IDها برای تنظیم Inbound/Node ID استفاده کن."
+    text += (
+        f"\nℹ️ این لیست فقط جهت اطلاعه. برای ساخت اکانت‌های جدید، به‌صورت "
+        f"خودکار همه‌ی {terms['unit_fa']}‌های فعال این پنل استفاده می‌شن — "
+        f"نیازی به تنظیم دستی نیست."
+    )
     await call.message.edit_text(text, reply_markup=back_btn)
     await call.answer()
 
@@ -1366,12 +1379,12 @@ async def admin_panel_inbounds(call: types.CallbackQuery):
 async def admin_panel_delete(call: types.CallbackQuery):
     if not is_admin(call.from_user.id): return
     pid = int(call.data.split(":")[2])
-    
+
     # حذف پنل
     await run_db(delete_panel, pid)
     invalidate_panel_cache(pid)
     await call.answer("🗑 پنل حذف شد!", show_alert=True)
-    
+
     # برگشت به لیست پنل‌ها
     panels = await run_db(get_all_panels)
     buttons = []
@@ -1380,10 +1393,10 @@ async def admin_panel_delete(call: types.CallbackQuery):
             p_id, name, ptype, url = p
             status = "✅" if url else "⚠️"
             buttons.append([InlineKeyboardButton(text=f"{status} {name} ({ptype.upper()})", callback_data=f"admin:panel_detail:{p_id}")])
-            
+
     buttons.append([InlineKeyboardButton(text="➕ افزودن سرور/پنل جدید", callback_data="admin:panel_add")])
     buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
-    
+
     await call.message.edit_text("⚙️ مدیریت سرورها و پنل‌های VPN:\nیک پنل را برای ویرایش انتخاب کرده یا پنل جدید بسازید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 

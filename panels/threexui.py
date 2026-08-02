@@ -74,8 +74,6 @@ class ThreeXUIClient(BasePanelClient):
 
         if not inbound_ids:
             inbound_ids = await self.get_all_inbound_ids()
-        if not inbound_ids and self.inbound_id:
-            inbound_ids = [int(self.inbound_id) if str(self.inbound_id).isdigit() else self.inbound_id]
         if not inbound_ids:
             return None
 

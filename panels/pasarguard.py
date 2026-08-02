@@ -10,40 +10,18 @@ logger = logging.getLogger(__name__)
 
 
 class PasarguardClient(BasePanelClient):
-    """کلاینت اختصاصی پنل PasarGuard"""
+    """
+    کلاینت اختصاصی پنل PasarGuard.
 
-    def __init__(self, cfg: tuple):
-        super().__init__(cfg)
-        self._access_token = None
-        self._token_expires_at = 0
+    اتصال فقط با API Key انجام می‌شه — دقیقاً مثل 3x-ui. یعنی همون کلید
+    ثابتی که از بخش «API Keys» خودِ پنل PasarGuard می‌سازی، مستقیم توی هدر
+    Authorization به‌صورت Bearer token فرستاده می‌شه. دیگه نیازی به لاگین
+    یوزرنیم/پسورد و گرفتن access_token موقت از /api/admin/token نیست.
+    """
 
-    async def _get_token(self) -> str | None:
-        now = time.time()
-        if self._access_token and now < self._token_expires_at:
-            return self._access_token
-
-        payload = {"username": self.username, "password": self.password}
-        try:
-            async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
-                resp = await session.post(f"{self.base_url}/api/admin/token", data=payload, ssl=False)
-                if resp.status == 200:
-                    data = await resp.json()
-                    self._access_token = data.get("access_token")
-                    self._token_expires_at = now + 3000
-                    return self._access_token
-                else:
-                    logger.error(f"Pasarguard login failed: {resp.status} - {await resp.text()}")
-                    return None
-        except Exception as e:
-            logger.error(f"Pasarguard login error: {e}")
-            return None
-
-    async def _headers(self) -> dict | None:
-        token = await self._get_token()
-        if not token:
-            return None
+    def _headers(self) -> dict:
         return {
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "accept": "application/json",
         }
@@ -54,9 +32,7 @@ class PasarguardClient(BasePanelClient):
         return f"{sub_base}/{self.sub_path}/{sub_id}"
 
     async def _request(self, method: str, path: str, payload: dict = None) -> dict | None:
-        headers = await self._headers()
-        if not headers:
-            return None
+        headers = self._headers()
         url = f"{self.base_url}{path}"
         try:
             async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
@@ -112,8 +88,6 @@ class PasarguardClient(BasePanelClient):
 
         if inbound_ids:
             payload["node_ids"] = [int(i) for i in inbound_ids if str(i).isdigit()]
-        elif self.inbound_id:
-            payload["node_ids"] = [int(i) for i in str(self.inbound_id).split(',') if str(i).isdigit()]
 
         data = await self._request("POST", "/api/user/", payload=payload)
         if not data:

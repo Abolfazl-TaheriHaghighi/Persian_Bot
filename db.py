@@ -240,7 +240,6 @@ def init_db():
             username TEXT DEFAULT NULL,
             password TEXT DEFAULT NULL,
             api_key TEXT DEFAULT NULL,
-            inbound_id INTEGER DEFAULT NULL,
             panel_path TEXT DEFAULT '',
             sub_port INTEGER DEFAULT 2096,
             sub_path TEXT DEFAULT 'sub'
@@ -371,10 +370,18 @@ def init_db():
     """)
 
     # ---- ارتقا برای پشتیبانی از چند پنل ----
-    # اضافه کردن نام، نوع پنل و تغییر نوع inbound_id برای پشتیبانی از فرمت‌های مختلف (مثل پاسارگارد)
+    # اضافه کردن نام و نوع پنل برای پشتیبانی از فرمت‌های مختلف (مثل پاسارگارد)
     cur.execute("ALTER TABLE panel_config ADD COLUMN IF NOT EXISTS name TEXT DEFAULT 'پنل اصلی'")
     cur.execute("ALTER TABLE panel_config ADD COLUMN IF NOT EXISTS panel_type TEXT DEFAULT '3x-ui'")
-    cur.execute("ALTER TABLE panel_config ALTER COLUMN inbound_id TYPE TEXT USING inbound_id::TEXT")
+
+    # ---- حذف کامل ستون inbound_id از panel_config ----
+    # این فیلد قبلاً برای «Inbound ID دستی (3x-ui) / Node ID دستی (PasarGuard)»
+    # استفاده می‌شد، ولی هیچ‌وقت واقعاً لازم نبود: برای 3x-ui به‌صورت خودکار همه‌ی
+    # inbound های فعال پنل استفاده می‌شن (get_all_inbound_ids)، و برای PasarGuard
+    # اگه node خاصی مشخص نشه، از تنظیمات پیش‌فرض خود پنل استفاده می‌شه. پس این
+    # ستون و هر منطقی که بهش وابسته بود به‌طور کامل از پروژه حذف شده؛ این خط
+    # فقط برای نصب‌های قدیمی‌تر که ستون رو داشتن، پاکسازیش می‌کنه.
+    cur.execute("ALTER TABLE panel_config DROP COLUMN IF EXISTS inbound_id")
 
     # تبدیل ستون id پنل به حالت افزایشی (Serial) برای افزودن پنل‌های جدید
     cur.execute("""
@@ -1618,16 +1625,16 @@ def has_pending_request(user_id):
 
 
 # ================== PANEL CONFIG ==================
-# نکته: این نسخه ۹ ستونی است (شامل sub_port و sub_path) — panel.py مستقیماً
-# به این دو ستون برای ساخت لینک subscription وابسته است. نسخه‌ی قدیمی‌تر
-# ۷ ستونی که این دو فیلد را نداشت، به‌عمد حذف شده است.
+# نکته: نسخه‌ی تک‌پنلی قدیمی (id=1) — از قبل با معماری چند-پنلی (get_panel /
+# update_panel_field) جایگزین شده و در حال حاضر هیچ‌جای پروژه صدا زده نمی‌شه؛
+# فقط برای سازگاری با کدهای خیلی قدیمی نگه داشته شده.
 
 def get_panel_config():
-    """برمی‌گردونه (panel_url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path)"""
+    """برمی‌گردونه (panel_url, auth_type, username, password, api_key, panel_path, sub_port, sub_path)"""
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT panel_url, auth_type, username, password, api_key, inbound_id, panel_path, sub_port, sub_path
+        SELECT panel_url, auth_type, username, password, api_key, panel_path, sub_port, sub_path
         FROM panel_config WHERE id=1
     """)
     r = cur.fetchone()
@@ -1636,7 +1643,7 @@ def get_panel_config():
 
 
 def update_panel_config(**kwargs):
-    allowed = {"panel_url", "auth_type", "username", "password", "api_key", "inbound_id", "panel_path", "sub_port", "sub_path"}
+    allowed = {"panel_url", "auth_type", "username", "password", "api_key", "panel_path", "sub_port", "sub_path"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return
@@ -2255,7 +2262,7 @@ def get_panel(panel_id: int):
     cur = conn.cursor()
     cur.execute("""
         SELECT id, name, panel_type, panel_url, auth_type, username, password,
-               api_key, inbound_id, panel_path, sub_port, sub_path
+               api_key, panel_path, sub_port, sub_path
         FROM panel_config WHERE id=%s
     """, (panel_id,))
     r = cur.fetchone()
@@ -2278,7 +2285,7 @@ def add_panel(name: str, panel_type: str):
 def update_panel_field(panel_id: int, field: str, value):
     """ویرایش یک فیلد خاص از یک پنل مشخص"""
     allowed = {"name", "panel_type", "panel_url", "auth_type", "username",
-               "password", "api_key", "inbound_id", "panel_path", "sub_port", "sub_path"}
+               "password", "api_key", "panel_path", "sub_port", "sub_path"}
     if field not in allowed:
         return
     conn = connect()
