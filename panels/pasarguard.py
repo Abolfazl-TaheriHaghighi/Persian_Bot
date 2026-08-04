@@ -13,15 +13,44 @@ class PasarguardClient(BasePanelClient):
     """
     کلاینت اختصاصی پنل PasarGuard.
 
-    اتصال فقط با API Key انجام می‌شه — دقیقاً مثل 3x-ui. یعنی همون کلید
-    ثابتی که از بخش «API Keys» خودِ پنل PasarGuard می‌سازی، مستقیم توی هدر
-    Authorization به‌صورت Bearer token فرستاده می‌شه. دیگه نیازی به لاگین
-    یوزرنیم/پسورد و گرفتن access_token موقت از /api/admin/token نیست.
+    اتصال با یوزرنیم/رمز عبور انجام می‌شه: اول با POST /api/admin/token یک
+    access_token موقت گرفته می‌شه، بعد همون توکن روی هر درخواست دیگه به‌عنوان
+    Bearer token فرستاده می‌شه. (روش API Key مستقیم روی نسخه‌ی این پنل باگ
+    داشت و 401 برمی‌گردوند، برای همین از این روش استفاده می‌کنیم.)
     """
 
-    def _headers(self) -> dict:
+    def __init__(self, cfg: tuple):
+        super().__init__(cfg)
+        self._access_token = None
+        self._token_expires_at = 0
+
+    async def _get_token(self) -> str | None:
+        now = time.time()
+        if self._access_token and now < self._token_expires_at:
+            return self._access_token
+
+        payload = {"username": self.username, "password": self.password}
+        try:
+            async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
+                resp = await session.post(f"{self.base_url}/api/admin/token", data=payload, ssl=False)
+                if resp.status == 200:
+                    data = await resp.json()
+                    self._access_token = data.get("access_token")
+                    self._token_expires_at = now + 3000
+                    return self._access_token
+                else:
+                    logger.error(f"Pasarguard login failed: {resp.status} - {await resp.text()}")
+                    return None
+        except Exception as e:
+            logger.error(f"Pasarguard login error: {e}")
+            return None
+
+    async def _headers(self) -> dict | None:
+        token = await self._get_token()
+        if not token:
+            return None
         return {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "accept": "application/json",
         }
@@ -32,7 +61,9 @@ class PasarguardClient(BasePanelClient):
         return f"{sub_base}/{self.sub_path}/{sub_id}"
 
     async def _request(self, method: str, path: str, payload: dict = None) -> dict | None:
-        headers = self._headers()
+        headers = await self._headers()
+        if not headers:
+            return None
         url = f"{self.base_url}{path}"
         try:
             async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
@@ -89,7 +120,7 @@ class PasarguardClient(BasePanelClient):
         if inbound_ids:
             payload["node_ids"] = [int(i) for i in inbound_ids if str(i).isdigit()]
 
-        data = await self._request("POST", "/api/user/", payload=payload)
+        data = await self._request("POST", "/api/user", payload=payload)
         if not data:
             return None
 
@@ -109,6 +140,57 @@ class PasarguardClient(BasePanelClient):
             "data_limit": data_limit_bytes,
             "inbound_ids": inbound_ids,
         }
+
+    async def renew_client(self, email: str, add_days: int = 0, add_bytes: int = 0) -> dict | None:
+        # ۱. دریافت اطلاعات فعلی کاربر
+        current_data = await self._request("GET", f"/api/user/{quote(email, safe='')}")
+        if not current_data:
+            logger.error(f"Failed to fetch user {email} for renewal.")
+            return None
+
+        new_payload = {}
+        
+        # ۲. محاسبه حجم جدید
+        if add_bytes > 0:
+            current_limit = current_data.get("data_limit", 0)
+            new_payload["data_limit"] = current_limit + add_bytes
+
+        # ۳. محاسبه تاریخ انقضای جدید
+        if add_days > 0:
+            current_expire_str = current_data.get("expire")
+            current_time = time.time()
+            expire_timestamp = current_time  # پیش‌فرض: محاسبه از همین الان
+            
+            # اگر کاربر از قبل تاریخ انقضا دارد، آن را به Timestamp تبدیل می‌کنیم
+            if current_expire_str:
+                try:
+                    if current_expire_str.endswith("Z"):
+                        current_expire_str = current_expire_str.replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(current_expire_str)
+                    ts = dt.timestamp()
+                    
+                    # اگر تاریخ انقضای فعلی هنوز نگذشته است، روزهای جدید را به آن اضافه می‌کنیم
+                    if ts > current_time:
+                        expire_timestamp = ts
+                except Exception as e:
+                    logger.error(f"Time parse error in renew: {e}")
+            
+            # اضافه کردن روزهای جدید و تبدیل مجدد به فرمت استاندارد پاسارگارد
+            new_expire_ms = int((expire_timestamp + (add_days * 86400)) * 1000)
+            expire_dt = datetime.fromtimestamp(new_expire_ms / 1000.0, tz=timezone.utc)
+            new_payload["expire"] = expire_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        # ۴. تغییر وضعیت کاربر به فعال (در صورتی که قبلاً منقضی و غیرفعال شده باشد)
+        new_payload["status"] = "active"
+
+        # ۵. ارسال درخواست آپدیت به پنل
+        resp = await self._request("PUT", f"/api/user/{quote(email, safe='')}", payload=new_payload)
+        
+        # فایل panel.py در تابع renew_vpn_account انتظار دارد کلید success برگردانده شود
+        if resp:
+            return {"success": True}
+        
+        return None
 
     async def get_client_stat(self, email: str) -> dict | None:
         data = await self._request("GET", f"/api/user/{quote(email, safe='')}")

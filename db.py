@@ -1704,7 +1704,7 @@ def get_vpn_account(account_id, user_id=None):
                 v.data_limit, v.created_at, v.is_trial,
                 COALESCE(p.service_name, s.name, 'تست رایگان') as service_name,
                 COALESCE(c.name, '—') as category_name,
-                v.purchase_id, v.note, v.user_id, v.panel_id
+                v.purchase_id, v.note, v.user_id, v.panel_id, v.sub_id
             FROM vpn_accounts v
             LEFT JOIN purchases p ON v.purchase_id = p.id
             LEFT JOIN services s ON p.service_id = s.id
@@ -1718,7 +1718,7 @@ def get_vpn_account(account_id, user_id=None):
                 v.data_limit, v.created_at, v.is_trial,
                 COALESCE(p.service_name, s.name, 'تست رایگان') as service_name,
                 COALESCE(c.name, '—') as category_name,
-                v.purchase_id, v.note, v.user_id, v.panel_id
+                v.purchase_id, v.note, v.user_id, v.panel_id, v.sub_id
             FROM vpn_accounts v
             LEFT JOIN purchases p ON v.purchase_id = p.id
             LEFT JOIN services s ON p.service_id = s.id

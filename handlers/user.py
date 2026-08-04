@@ -290,9 +290,9 @@ async def _render_service_detail(call: types.CallbackQuery, account_id: int) -> 
         await call.message.edit_text("این سرویس پیدا نشد یا مال شما نیست.", reply_markup=home_button_kb())
         return False
 
-    # آپدیت: 15 فیلد برمی‌گردد
+    # آپدیت: 16 فیلد برمی‌گردد (sub_id در انتها اضافه شده)
     account_id, email, uuid, sub_url, inbound_id, expire_time_db, data_limit_db, \
-    created_at, is_trial, service_name, category_name, purchase_id, note, owner_id, panel_id = acc
+    created_at, is_trial, service_name, category_name, purchase_id, note, owner_id, panel_id, sub_id = acc
 
     live = await get_client_status(email, panel_id=panel_id or 1)
     if live is None:
@@ -399,6 +399,7 @@ async def svc_toggle(call: types.CallbackQuery):
 @router.callback_query(F.data.startswith("svclink:"))
 async def svc_link(call: types.CallbackQuery):
     from db import get_vpn_account
+    from panel import build_sub_url
 
     account_id = int(call.data.split(":")[1])
     acc = await run_db(get_vpn_account, account_id, call.from_user.id)
@@ -406,7 +407,19 @@ async def svc_link(call: types.CallbackQuery):
         await call.answer("این سرویس پیدا نشد یا مال شما نیست.", show_alert=True)
         return
 
-    sub_url = acc[3]
+    stored_sub_url = acc[3]
+    panel_id = acc[14] if len(acc) > 14 and acc[14] else 1
+    sub_id = acc[15] if len(acc) > 15 else None
+
+    # همیشه لینک رو بر اساس تنظیمات *فعلیِ* پنل (دامنه/پورت/مسیر) دوباره
+    # می‌سازیم، نه از روی مقدار قدیمی که موقع ساخت اکانت ذخیره شده — اگه
+    # دامنه یا پورت پنل عوض شده باشه، لینک همیشه به‌روز و درست می‌مونه.
+    sub_url = stored_sub_url
+    if sub_id:
+        fresh_url = await build_sub_url(sub_id, panel_id=panel_id)
+        if fresh_url:
+            sub_url = fresh_url
+
     if not sub_url:
         await call.answer("لینکی برای این سرویس ثبت نشده.", show_alert=True)
         return

@@ -124,11 +124,12 @@ async def test_panel_connection(panel_id: int = 1) -> tuple[bool, str]:
 
     if panel_type.lower() == "pasarguard":
         client = PasarguardClient(cfg)
+        if not client.username or not client.password:
+            return False, "❌ نام کاربری و رمز عبور برای PasarGuard وارد نشده"
     else:
         client = ThreeXUIClient(cfg)
-
-    if not client.api_key:
-        return False, "❌ API Key وارد نشده"
+        if not client.api_key:
+            return False, "❌ API Key وارد نشده"
 
     inbounds = await client.get_inbounds()
     _cache.invalidate(panel_id)
@@ -163,3 +164,23 @@ async def get_inbound_list(panel_id: int = 1) -> list:
     if not client:
         return []
     return await client.get_inbounds()
+
+
+async def build_sub_url(sub_id: str, panel_id: int = 1) -> str | None:
+    """
+    ساخت لینک سابسکریپشن بر اساس تنظیمات *فعلیِ* پنل (دامنه، پورت، Sub Path)
+    — نه از روی مقدار قدیمی که موقع ساخت اکانت توی دیتابیس ذخیره شده بود.
+    اگه ادمین بعداً دامنه یا پورت پنل رو عوض کنه، این تابع همیشه لینک تازه و
+    درست رو برمی‌گردونه، چون هربار از get_panel_client (و در نتیجه از تنظیمات
+    فعلی جدول panel_config) استفاده می‌کنه.
+    """
+    if not sub_id:
+        return None
+    client = await get_panel_client(panel_id)
+    if not client:
+        return None
+    try:
+        return client._sub_url(sub_id)
+    except Exception:
+        logger.warning(f"build_sub_url: failed to build sub url for panel {panel_id}")
+        return None

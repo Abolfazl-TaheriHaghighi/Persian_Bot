@@ -1150,7 +1150,7 @@ def _panel_terms(panel_type: str) -> dict:
             "unit_fa": "نود",
             "list_button": "📋 دریافت لیست نودها",
             "list_title": "📋 لیست نودهای این پنل",
-            "credential_hint": "بعدش از «🔑 API Key» کلید API پنل رو وارد کن (از بخش API Keys خودِ پنل PasarGuard می‌سازیش).",
+            "credential_hint": "بعدش از «👤 نام کاربری» و «🔑 رمز عبور» اطلاعات ادمین پنل رو وارد کن.",
         }
     return {
         "unit_fa": "اینباند",
@@ -1176,8 +1176,15 @@ def _build_panel_detail_view(p) -> tuple[str, InlineKeyboardMarkup]:
     buttons = [
         [InlineKeyboardButton(text=f"📝 نام پنل: {name}", callback_data=f"admin:panel_set:{pid}:name")],
         [InlineKeyboardButton(text=f"{connected} آدرس پنل: {url or 'تنظیم نشده'}", callback_data=f"admin:panel_set:{pid}:panel_url")],
-        [InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data=f"admin:panel_set:{pid}:api_key")],
     ]
+
+    if ptype.lower() == "pasarguard":
+        buttons.append([
+            InlineKeyboardButton(text=f"👤 نام کاربری: {'✅' if username else '❌'}", callback_data=f"admin:panel_set:{pid}:username"),
+            InlineKeyboardButton(text=f"🔑 رمز عبور: {'✅' if password else '❌'}", callback_data=f"admin:panel_set:{pid}:password")
+        ])
+    else:
+        buttons.append([InlineKeyboardButton(text=f"🔑 API Key: {'✅ ست شده' if api_key else '—'}", callback_data=f"admin:panel_set:{pid}:api_key")])
 
     buttons.extend([
         [InlineKeyboardButton(text=f"📂 Panel Path: {panel_path or '/'}", callback_data=f"admin:panel_set:{pid}:panel_path")],
@@ -1272,6 +1279,8 @@ async def admin_panel_set_field(call: types.CallbackQuery, state: FSMContext):
         "name":        "📝 نام جدید برای این پنل وارد کن:",
         "panel_url":   "🌐 آدرس پنل رو وارد کن:\nمثال: https://1.2.3.4:2053",
         "api_key":     "🔑 API Key پنل رو وارد کن:",
+        "username":    "👤 نام کاربری (Username) پنل رو وارد کن:",
+        "password":    "🔑 رمز عبور (Password) پنل رو وارد کن:",
         "panel_path":  "📂 Panel Path رو وارد کن (پیش‌فرض خالی):\nمثال: /panel یا /skip برای خالی:",
         "sub_port":    "🔌 پورت لینک Sub رو وارد کن:\nمثال: 2096 (یا /skip اگه همون پورت پنله):",
         "sub_path":    "📎 Sub Path رو وارد کن (پیش‌فرض: sub):\nمثال: sub یا subscription:",
@@ -1300,9 +1309,31 @@ async def admin_panel_save_field(message: types.Message, state: FSMContext):
         value = "sub" if raw == "/skip" else raw.strip("/")
     elif field == "panel_url":
         from urllib.parse import urlparse
-        parsed = urlparse(raw.rstrip("/"))
+
+        # کاراکتر # (fragment) مربوط به روتینگ فرانت‌اند SPA است (مثلاً
+        # /dashboard/#/login که آدرس صفحه‌ی لاگین پاسارگارد توی مرورگره)
+        # و هیچ ربطی به مسیر واقعی API نداره؛ قبل از parse حذفش می‌کنیم
+        # تا اشتباهی به‌عنوان بخشی از مسیر خونده نشه.
+        cleaned = raw.split("#")[0].rstrip("/")
+        parsed = urlparse(cleaned)
         base = f"{parsed.scheme}://{parsed.netloc}"
         path = parsed.path.rstrip("/")
+
+        # فهمیدن نوع پنل — چون فقط 3x-ui از panel_path استفاده می‌کنه
+        # (به‌عنوان پیشوند مشترک بین پنل وب و API)؛ پاسارگارد API‌هاش
+        # همیشه مستقیم زیر /api/... هستن و panel_path توش بی‌معنیه، پس
+        # حتی اگه کاربر لینک صفحه‌ی داشبورد رو پیست کرده باشه نادیده می‌گیریمش.
+        panel_row = await run_db(get_panel, pid)
+        ptype = (panel_row[2] if panel_row else "3x-ui") or "3x-ui"
+
+        if ptype.lower() == "pasarguard":
+            await run_db(update_panel_field, pid, "panel_url", base)
+            await run_db(update_panel_field, pid, "panel_path", "")
+            await message.answer(f"✅ آدرس ذخیره شد.\n🌐 Base URL: {base}")
+            invalidate_panel_cache(pid)
+            await state.clear()
+            return
+
         value = base
         if path:
             await run_db(update_panel_field, pid, "panel_url", base)
