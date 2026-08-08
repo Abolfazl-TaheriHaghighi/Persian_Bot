@@ -98,6 +98,24 @@ class PasarguardClient(BasePanelClient):
 
         return [{"id": n.get("id"), "remark": n.get("name") or f"Node {n.get('id')}"} for n in nodes_list if n.get("id") is not None]
 
+    async def get_groups(self) -> list:
+        """
+        لیست Group های تعریف‌شده روی این پنل PasarGuard — هر Group یک بسته از
+        inbound/host هاست. کاربر باید حداقل به یک Group متصل باشه تا اصلاً
+        کانفیگ/پروکسی واقعی توی ساب‌اسکریپشنش تولید بشه.
+        """
+        data = await self._request("GET", "/api/groups")
+        if not data:
+            return []
+
+        groups_list = []
+        if isinstance(data, dict) and "groups" in data and isinstance(data["groups"], list):
+            groups_list = data["groups"]
+        elif isinstance(data, list):
+            groups_list = data
+
+        return [{"id": g.get("id"), "name": g.get("name") or f"Group {g.get('id')}"} for g in groups_list if g.get("id") is not None]
+
     async def add_client(self, email: str, duration_days: int, data_limit_gb: float, inbound_ids: list | None = None) -> dict | None:
         if duration_days <= 0:
             return None
@@ -117,8 +135,13 @@ class PasarguardClient(BasePanelClient):
             "proxies": {"vless": {}},
         }
 
+        # نکته‌ی مهم: پارامتر inbound_ids اینجا در واقع «Group ID» هاست، نه
+        # Node ID. بدون فرستادن group_ids درست، PasarGuard یوزر رو می‌سازه
+        # ولی هیچ کانفیگ/پروکسی واقعی‌ای بهش نمی‌ده (چون به هیچ Group ای
+        # وصل نیست) — این دقیقاً همون باگی بود که قبلاً اینجا وجود داشت
+        # (فرستادن اشتباهی node_ids به‌جای group_ids).
         if inbound_ids:
-            payload["node_ids"] = [int(i) for i in inbound_ids if str(i).isdigit()]
+            payload["group_ids"] = [int(i) for i in inbound_ids if str(i).isdigit()]
 
         data = await self._request("POST", "/api/user", payload=payload)
         if not data:

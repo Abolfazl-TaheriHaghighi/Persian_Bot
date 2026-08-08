@@ -71,13 +71,13 @@ async def get_panel_client(panel_id: int = 1) -> BasePanelClient | None:
 
 async def create_vpn_account(
     user_id: int, email: str, duration_days: int, data_limit_gb: float,
-    group: str | None = None, panel_id: int = 1
+    group: str | None = None, panel_id: int = 1, inbound_ids: list | None = None
 ) -> dict | None:
     client = await get_panel_client(panel_id)
     if not client:
         return None
 
-    result = await client.add_client(email, duration_days, data_limit_gb)
+    result = await client.add_client(email, duration_days, data_limit_gb, inbound_ids=inbound_ids)
 
     if result and group:
         ok = await client.set_client_group(email, group)
@@ -164,6 +164,18 @@ async def get_inbound_list(panel_id: int = 1) -> list:
     if not client:
         return []
     return await client.get_inbounds()
+
+
+async def get_panel_groups(panel_id: int = 1) -> list:
+    """
+    لیست Group های پنل — فقط برای پنل‌هایی مثل PasarGuard که این مفهوم رو
+    دارن معنا داره؛ برای 3x-ui همیشه لیست خالی برمی‌گرده (چون نیازی به
+    انتخاب گروه نداره، خودش همه‌ی inbound های فعال رو به‌کار می‌بره).
+    """
+    client = await get_panel_client(panel_id)
+    if not client:
+        return []
+    return await client.get_groups()
 
 
 async def build_sub_url(sub_id: str, panel_id: int = 1) -> str | None:

@@ -14,6 +14,7 @@ from db import (
     has_previous_purchase, save_vpn_account,
     is_partner, get_categories_for_user,
     get_custom_groups, get_custom_group,
+    get_category_panel_group_ids,
 )
 from panel import create_vpn_account
 from keyboards import categories_kb, services_kb, invoice_kb, back_kb, custom_groups_kb, home_button_kb
@@ -106,9 +107,9 @@ async def show_invoice(call: types.CallbackQuery):
     if not service:
         await call.answer("❌ سرویس پیدا نشد", show_alert=True)
         return
-    
-    # آپدیت: 9 فیلد برمی‌گردد
-    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id = service
+
+    # آپدیت: 10 فیلد برمی‌گردد (category_id در انتها اضافه شده)
+    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id, category_id = service
     if not is_active:
         await call.answer("❌ این سرویس فعلاً در دسترس نیست", show_alert=True)
         return
@@ -182,8 +183,8 @@ async def apply_discount_code(message: types.Message, state: FSMContext):
         return
 
     service = await run_db(get_service, service_id)
-    # آپدیت: 9 فیلد برمی‌گردد
-    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id = service
+    # آپدیت: 10 فیلد برمی‌گردد (category_id در انتها اضافه شده)
+    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id, category_id = service
 
     if dc_type == "percent":
         discount_amount = int(price * dc_value / 100)
@@ -228,8 +229,8 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
         await call.answer("❌ سرویس پیدا نشد", show_alert=True)
         return
 
-    # آپدیت: 9 فیلد برمی‌گردد
-    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id = service
+    # آپدیت: 10 فیلد برمی‌گردد (category_id در انتها اضافه شده)
+    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id, category_id = service
     user_id = call.from_user.id
 
     success = await run_db(deduct_balance, user_id, final_price)
@@ -269,11 +270,20 @@ async def confirm_discounted_buy(call: types.CallbackQuery, bot: Bot):
 
 
 async def _create_and_send_vpn(bot, user_id: int, purchase_id: int, service: tuple, panel_id: int = 1, is_trial: bool = False):
-    sid, name, desc, price, days, data_gb, is_active, cat_name, _pid = service
+    # آپدیت: 10 فیلد برمی‌گردد (category_id در انتها اضافه شده)
+    sid, name, desc, price, days, data_gb, is_active, cat_name, _pid, category_id = service
     email, group = await prepare_new_client(user_id)
 
+    # گروه‌های PasarGuard متصل به این دسته‌بندی (برای 3x-ui لیست خالی هست و
+    # بی‌اثره؛ برای PasarGuard اگه دسته گروهی نداشته باشه، اکانت ساخته می‌شه
+    # ولی هیچ کانفیگ/پروکسی‌ای نخواهد داشت — پس این مقدار ضروریه)
+    group_ids = await run_db(get_category_panel_group_ids, category_id)
+
     # اتصال به پنل مورد نظر
-    result = await create_vpn_account(user_id, email, days, float(data_gb), group=group, panel_id=panel_id)
+    result = await create_vpn_account(
+        user_id, email, days, float(data_gb),
+        group=group, panel_id=panel_id, inbound_ids=group_ids or None
+    )
 
     if result:
         await run_db(save_vpn_account,
@@ -333,8 +343,8 @@ async def confirm_buy(call: types.CallbackQuery, bot: Bot):
     if not service:
         await call.answer("❌ سرویس پیدا نشد", show_alert=True)
         return
-    # آپدیت: 9 فیلد برمی‌گردد
-    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id = service
+    # آپدیت: 10 فیلد برمی‌گردد (category_id در انتها اضافه شده)
+    sid, name, desc, price, days, data_gb, is_active, cat_name, panel_id, category_id = service
     user_id = call.from_user.id
     success = await run_db(deduct_balance, user_id, price)
     if not success:

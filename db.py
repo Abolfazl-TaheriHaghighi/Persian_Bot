@@ -399,6 +399,12 @@ def init_db():
     cur.execute("ALTER TABLE categories ADD COLUMN IF NOT EXISTS panel_id INTEGER REFERENCES panel_config(id) ON DELETE SET NULL")
     cur.execute("ALTER TABLE vpn_accounts ADD COLUMN IF NOT EXISTS panel_id INTEGER REFERENCES panel_config(id) ON DELETE SET NULL")
 
+    # ---- گروه‌های PasarGuard متصل به هر دسته‌بندی (چندتایی، comma-separated) ----
+    # فقط برای دسته‌بندی‌هایی معنا داره که panel_id شون به یک پنل PasarGuard
+    # وصل باشه. بدون انتخاب حداقل یک گروه، اکانت‌های ساخته‌شده روی PasarGuard
+    # هیچ config/پروکسی واقعی‌ای نخواهند داشت (چون به هیچ Group ای متصل نیستن).
+    cur.execute("ALTER TABLE categories ADD COLUMN IF NOT EXISTS panel_group_ids TEXT DEFAULT ''")
+
     conn.commit()
     conn.close()
 
@@ -774,11 +780,11 @@ def delete_category(cat_id):
 
 
 def get_category_full(cat_id):
-    """گرفتن اطلاعات کامل دسته به همراه نام پنل متصل (برای منوی ادمین)"""
+    """گرفتن اطلاعات کامل دسته به همراه نام و نوع پنل متصل (برای منوی ادمین)"""
     conn = connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT c.id, c.name, c.emoji, c.is_active, c.is_custom, c.panel_id, p.name as panel_name
+        SELECT c.id, c.name, c.emoji, c.is_active, c.is_custom, c.panel_id, p.name as panel_name, p.panel_type
         FROM categories c
         LEFT JOIN panel_config p ON c.panel_id = p.id
         WHERE c.id=%s
@@ -788,8 +794,8 @@ def get_category_full(cat_id):
     return r
 
 def update_category(cat_id, field, value):
-    """ویرایش فیلدهای دسته‌بندی (نام یا پنل متصل)"""
-    allowed = {"name": "name", "panel_id": "panel_id"}
+    """ویرایش فیلدهای دسته‌بندی (نام، پنل متصل، یا گروه‌های PasarGuard)"""
+    allowed = {"name": "name", "panel_id": "panel_id", "panel_group_ids": "panel_group_ids"}
     col = allowed.get(field)
     if not col:
         return
@@ -798,6 +804,26 @@ def update_category(cat_id, field, value):
     cur.execute(f"UPDATE categories SET {col}=%s WHERE id=%s", (value, cat_id))
     conn.commit()
     conn.close()
+
+
+def get_category_panel_group_ids(category_id) -> list[str]:
+    """
+    لیست آیدی گروه‌های PasarGuard انتخاب‌شده برای این دسته (به‌صورت رشته،
+    چون فقط برای ارسال مستقیم توی payload لازمه). اگه دسته‌ای وجود نداشت یا
+    هنوز هیچ گروهی انتخاب نشده، لیست خالی برمی‌گرده — که یعنی پنل باید از
+    مقدار پیش‌فرض خودش استفاده کنه (فقط برای 3x-ui بی‌ضرره؛ برای PasarGuard
+    باعث می‌شه اکانت بدون کانفیگ ساخته بشه).
+    """
+    if not category_id:
+        return []
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT panel_group_ids FROM categories WHERE id=%s", (category_id,))
+    r = cur.fetchone()
+    conn.close()
+    if not r or not r[0]:
+        return []
+    return [x.strip() for x in r[0].split(",") if x.strip().isdigit()]
 
 # ================== SERVICES ==================
 
@@ -840,7 +866,7 @@ def get_service(service_id):
     cur = conn.cursor()
     cur.execute("""
         SELECT s.id, s.name, s.description, s.price, s.duration_days, s.data_limit_gb,
-               s.is_active, COALESCE(c.name,'') as cat_name, c.panel_id
+               s.is_active, COALESCE(c.name,'') as cat_name, c.panel_id, s.category_id
         FROM services s LEFT JOIN categories c ON s.category_id=c.id
         WHERE s.id=%s
     """, (service_id,))

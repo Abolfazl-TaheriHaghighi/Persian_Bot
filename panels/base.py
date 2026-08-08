@@ -36,6 +36,15 @@ class BasePanelClient:
     async def get_inbounds(self) -> list:
         raise NotImplementedError
 
+    async def get_groups(self) -> list:
+        """
+        برخی پنل‌ها (مثل PasarGuard) مفهومی به اسم «Group» دارن که چند
+        inbound/host رو بسته‌بندی می‌کنه و کاربر باید حداقل به یک گروه متصل
+        باشه تا config واقعی (پروکسی/vless و...) بگیره. پنل‌هایی که این
+        مفهوم رو ندارن (مثل 3x-ui) پیش‌فرض لیست خالی برمی‌گردونن.
+        """
+        return []
+
     async def add_client(self, email: str, duration_days: int, data_limit_gb: float, inbound_ids: list | None = None) -> dict | None:
         raise NotImplementedError
 

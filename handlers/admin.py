@@ -49,6 +49,9 @@ class AdminPanelEdit(StatesGroup):
 class AdminAddCategoryPanel(StatesGroup):
     waiting = State()
 
+class AdminAddCategoryGroups(StatesGroup):
+    waiting = State()
+
 # ================================================================
 # ADMIN PANEL
 # ================================================================
@@ -116,32 +119,39 @@ async def admin_purchases(call: types.CallbackQuery):
 # CATEGORIES
 # ================================================================
 
-@router.callback_query(F.data == "admin:categories")
-async def admin_categories(call: types.CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return
+async def _render_categories_list(call: types.CallbackQuery):
     cats = await run_db(get_all_categories, active_only=False)
     from keyboards import admin_categories_kb
     if not cats:
         await call.message.edit_text("🗂 هیچ دسته‌ای ثبت نشده.", reply_markup=admin_categories_kb(cats))
     else:
         await call.message.edit_text("🗂 برای مدیریت، روی نام دسته‌بندی کلیک کن:", reply_markup=admin_categories_kb(cats))
+
+
+@router.callback_query(F.data == "admin:categories")
+async def admin_categories(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    await _render_categories_list(call)
     await call.answer()
 
 
-@router.callback_query(F.data.startswith("admin:cat_detail:"))
-async def admin_cat_detail(call: types.CallbackQuery):
-    if not is_admin(call.from_user.id):
-        return
-    cat_id = int(call.data.split(":")[2])
+async def _render_cat_detail(call: types.CallbackQuery, cat_id: int):
     from db import get_category_full
     cat = await run_db(get_category_full, cat_id)
     if not cat:
         await call.answer("❌ دسته پیدا نشد", show_alert=True)
         return
 
-    cid, name, emoji, is_active, is_custom, panel_id, panel_name = cat
+    cid, name, emoji, is_active, is_custom, panel_id, panel_name, panel_type = cat
     p_text = f"🖥 {panel_name}" if panel_id else "❌ بدون اتصال (هیچ پنلی)"
+    is_pasarguard = bool(panel_id) and (panel_type or "").lower() == "pasarguard"
+
+    group_line = ""
+    if is_pasarguard:
+        from db import get_category_panel_group_ids
+        gids = await run_db(get_category_panel_group_ids, cat_id)
+        group_line = f"🎛 گروه‌های PasarGuard: {', '.join('#' + g for g in gids) if gids else '❌ هیچ گروهی انتخاب نشده! (اکانت‌ها config نخواهند داشت)'}\n"
 
     text = (
         f"🗂 جزئیات دسته‌بندی\n{'─'*22}\n"
@@ -149,10 +159,19 @@ async def admin_cat_detail(call: types.CallbackQuery):
         f"وضعیت: {'✅ فعال' if is_active else '❌ غیرفعال'}\n"
         f"نوع: {'🎯 سفارشی (پلن دلخواه)' if is_custom else '📦 معمولی'}\n"
         f"پنل متصل: {p_text}\n"
+        f"{group_line}"
     )
 
     from keyboards import admin_cat_detail_kb
-    await call.message.edit_text(text, reply_markup=admin_cat_detail_kb(cid, is_active))
+    await call.message.edit_text(text, reply_markup=admin_cat_detail_kb(cid, is_active, show_groups_button=is_pasarguard))
+
+
+@router.callback_query(F.data.startswith("admin:cat_detail:"))
+async def admin_cat_detail(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cat_id = int(call.data.split(":")[2])
+    await _render_cat_detail(call, cat_id)
     await call.answer()
 
 
@@ -164,8 +183,7 @@ async def admin_toggle_cat(call: types.CallbackQuery):
     new_status = await run_db(toggle_category, cat_id)
     await call.answer("✅ فعال شد" if new_status else "❌ غیرفعال شد", show_alert=True)
     # آپدیت صفحه بعد از تغییر وضعیت
-    call.data = f"admin:cat_detail:{cat_id}"
-    await admin_cat_detail(call)
+    await _render_cat_detail(call, cat_id)
 
 
 @router.callback_query(F.data.startswith("admin:del_cat:"))
@@ -176,8 +194,7 @@ async def admin_del_cat(call: types.CallbackQuery):
     await run_db(delete_category, cat_id)
     await call.answer("🗑 دسته حذف شد", show_alert=True)
     # بازگشت به لیست دسته‌ها
-    call.data = "admin:categories"
-    await admin_categories(call)
+    await _render_categories_list(call)
 
 
 @router.callback_query(F.data.startswith("admin:edit_cat:"))
@@ -229,8 +246,80 @@ async def admin_set_cat_panel(call: types.CallbackQuery):
     await run_db(update_category, cat_id, "panel_id", final_panel_id)
 
     await call.answer("✅ پنل دسته‌بندی تغییر کرد.", show_alert=True)
-    call.data = f"admin:cat_detail:{cat_id}"
-    await admin_cat_detail(call)
+    await _render_cat_detail(call, cat_id)
+
+
+# ---- مدیریت گروه‌های PasarGuard یک دسته‌بندی موجود ----
+
+async def _render_existing_cat_group_select(call: types.CallbackQuery, cat_id: int):
+    from db import get_category_full, get_category_panel_group_ids
+
+    cat = await run_db(get_category_full, cat_id)
+    if not cat:
+        await call.answer("❌ دسته پیدا نشد", show_alert=True)
+        return
+
+    _, name, _, _, _, panel_id, _, panel_type = cat
+    if not panel_id or (panel_type or "").lower() != "pasarguard":
+        await call.answer("این دسته به پنل PasarGuard متصل نیست.", show_alert=True)
+        return
+
+    groups = await get_panel_groups(panel_id)
+    selected = set(await run_db(get_category_panel_group_ids, cat_id))
+
+    if not groups:
+        text = (
+            f"🎛 گروه‌های PasarGuard — دسته «{name}»\n\n"
+            "❌ نتونستم لیست گروه‌ها رو از پنل بگیرم (یا پنل هیچ گروهی نداره).\n"
+            "اتصال پنل رو از «⚙️ تنظیمات پنل VPN» چک کن."
+        )
+        buttons = [[InlineKeyboardButton(text="🔙 برگشت", callback_data=f"admin:cat_detail:{cat_id}")]]
+    else:
+        text = (
+            f"🎛 گروه‌های PasarGuard — دسته «{name}»\n\n"
+            "بدون انتخاب حداقل یک گروه، اکانت‌های این دسته کانفیگ/پروکسی واقعی نخواهند داشت.\n"
+            "روی گروه‌های مدنظرت بزن (می‌تونی یکی، چندتا یا همه رو انتخاب کنی — هر تپ فوراً ذخیره می‌شه):"
+        )
+        buttons = []
+        for g in groups:
+            gid = str(g.get("id"))
+            checked = "✅" if gid in selected else "⬜️"
+            buttons.append([InlineKeyboardButton(
+                text=f"{checked} {g.get('name')} (#{gid})",
+                callback_data=f"admin:cat_grp_toggle:{cat_id}:{gid}"
+            )])
+        buttons.append([InlineKeyboardButton(text="🔙 برگشت به جزئیات دسته", callback_data=f"admin:cat_detail:{cat_id}")])
+
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("admin:cat_groups:"))
+async def admin_cat_groups_menu(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    cat_id = int(call.data.split(":")[2])
+    await _render_existing_cat_group_select(call, cat_id)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:cat_grp_toggle:"))
+async def admin_cat_grp_toggle(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    parts = call.data.split(":")
+    cat_id = int(parts[2])
+    gid = parts[3]
+
+    from db import get_category_panel_group_ids, update_category
+    current = set(await run_db(get_category_panel_group_ids, cat_id))
+    if gid in current:
+        current.discard(gid)
+    else:
+        current.add(gid)
+
+    await run_db(update_category, cat_id, "panel_group_ids", ",".join(sorted(current)))
+    await _render_existing_cat_group_select(call, cat_id)
+    await call.answer()
 
 
 # ---- افزودن دسته جدید ----
@@ -265,16 +354,94 @@ async def admin_add_cat_name(message: types.Message, state: FSMContext):
 @router.callback_query(F.data.startswith("admin:cat_set_panel:"), AdminAddCategoryPanel.waiting)
 async def admin_add_cat_panel(call: types.CallbackQuery, state: FSMContext):
     pid = int(call.data.split(":")[2])
-    await state.update_data(panel_id=pid if pid > 0 else None)
+    await state.update_data(panel_id=pid if pid > 0 else None, selected_group_ids=[])
+
+    if pid > 0:
+        panel_row = await run_db(get_panel, pid)
+        ptype = (panel_row[2] if panel_row else "3x-ui") or "3x-ui"
+        if ptype.lower() == "pasarguard":
+            # این نوع پنل بدون انتخاب حداقل یک Group، به کاربرهاش هیچ
+            # کانفیگ/پروکسی واقعی‌ای نمی‌ده — پس قبل از ادامه، باید گروه‌ها
+            # رو از خودِ پنل بگیریم و بذاریم ادمین انتخاب کنه.
+            await state.set_state(AdminAddCategoryGroups.waiting)
+            await _render_new_cat_group_select(call, state, pid)
+            await call.answer()
+            return
+
     await state.set_state(AdminAddCategory.emoji)
     await call.message.edit_text("😀 ایموجی دسته رو بفرست (مثلاً 🌍 یا 🔥)\nیا /skip برای پیش‌فرض 📦:")
     await call.answer()
+
+
+async def _render_new_cat_group_select(call: types.CallbackQuery, state: FSMContext, panel_id: int):
+    """
+    صفحه‌ی انتخاب چندتایی گروه‌های PasarGuard حین ساخت دسته‌بندی جدید —
+    گروه‌ها زنده از خودِ پنل گرفته می‌شن (نام + آیدی) و انتخاب‌ها موقتاً
+    توی FSM state نگه داشته می‌شن تا لحظه‌ی نهایی ذخیره‌ی دسته‌بندی.
+    """
+    groups = await get_panel_groups(panel_id)
+    data = await state.get_data()
+    selected = {str(x) for x in data.get("selected_group_ids", [])}
+
+    if not groups:
+        text = (
+            "🎛 این پنل PasarGuard هیچ گروهی (Group) نداره یا نتونستم لیستش رو از پنل بگیرم.\n"
+            "⚠️ بدون انتخاب حداقل یک گروه، اکانت‌های این دسته هیچ کانفیگ/پروکسی واقعی‌ای نخواهند داشت.\n\n"
+            "می‌تونی فعلاً رد کنی و بعداً از «جزئیات دسته‌بندی» گروه رو تنظیم کنی."
+        )
+        buttons = [[InlineKeyboardButton(text="➡️ رد کردن و ادامه", callback_data="admin:catgrp_new_done")]]
+    else:
+        text = (
+            "🎛 این پنل از نوع PasarGuard هست — باید حداقل یک گروه (Group) انتخاب کنی "
+            "تا اکانت‌های این دسته کانفیگ واقعی بگیرن.\n\n"
+            "روی گروه‌های مدنظرت بزن (می‌تونی یکی، چندتا یا همه رو انتخاب کنی)، "
+            "بعد «✅ تایید و ادامه» رو بزن:"
+        )
+        buttons = []
+        for g in groups:
+            gid = str(g.get("id"))
+            checked = "✅" if gid in selected else "⬜️"
+            buttons.append([InlineKeyboardButton(
+                text=f"{checked} {g.get('name')} (#{gid})",
+                callback_data=f"admin:catgrp_new_toggle:{gid}"
+            )])
+        buttons.append([InlineKeyboardButton(text="✅ تایید و ادامه", callback_data="admin:catgrp_new_done")])
+
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("admin:catgrp_new_toggle:"), AdminAddCategoryGroups.waiting)
+async def admin_catgrp_new_toggle(call: types.CallbackQuery, state: FSMContext):
+    gid = call.data.split(":")[2]
+    data = await state.get_data()
+    selected = [str(x) for x in data.get("selected_group_ids", [])]
+    if gid in selected:
+        selected.remove(gid)
+    else:
+        selected.append(gid)
+    await state.update_data(selected_group_ids=selected)
+    await _render_new_cat_group_select(call, state, data.get("panel_id"))
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:catgrp_new_done", AdminAddCategoryGroups.waiting)
+async def admin_catgrp_new_done(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminAddCategory.emoji)
+    await call.message.edit_text("😀 ایموجی دسته رو بفرست (مثلاً 🌍 یا 🔥)\nیا /skip برای پیش‌فرض 📦:")
+    await call.answer()
+
 
 @router.message(AdminAddCategory.emoji)
 async def admin_add_cat_emoji(message: types.Message, state: FSMContext):
     emoji = "📦" if message.text == "/skip" else message.text.strip()
     data = await state.get_data()
     cid = await run_db(add_category, data["name"], emoji, False, data.get("panel_id"))
+
+    group_ids = data.get("selected_group_ids") or []
+    if group_ids:
+        from db import update_category
+        await run_db(update_category, cid, "panel_group_ids", ",".join(str(x) for x in group_ids))
+
     await state.clear()
     await message.answer(
         f"✅ دسته‌بندی اضافه شد!\n{emoji} {data['name']}\n🔑 ID: {cid}",
@@ -310,7 +477,7 @@ async def admin_svc_detail(call: types.CallbackQuery):
     if not service:
         await call.answer("❌ سرویس پیدا نشد", show_alert=True)
         return
-    s_id, name, desc, price, days, data_gb, is_active, cat_name = service
+    s_id, name, desc, price, days, data_gb, is_active, cat_name, panel_id, category_id = service
     sep = "─" * 22
     text = (
         f"📦 جزئیات سرویس\n{sep}\n"
@@ -335,7 +502,7 @@ async def admin_toggle_service(call: types.CallbackQuery):
     await call.answer("✅ فعال شد" if new_status else "❌ غیرفعال شد", show_alert=True)
     service = await run_db(get_service, sid)
     if service:
-        s_id, name, desc, price, days, data_gb, is_active, cat_name = service
+        s_id, name, desc, price, days, data_gb, is_active, cat_name, panel_id, category_id = service
         sep = "─" * 22
         text = (
             f"📦 جزئیات سرویس\n{sep}\n"
@@ -1135,7 +1302,7 @@ async def admin_ch_invite_input(message: types.Message, state: FSMContext):
 # MULTI-PANEL CONFIG MANAGEMENT
 # ================================================================
 
-from panel import test_panel_connection, get_inbound_list, invalidate_panel_cache
+from panel import test_panel_connection, get_inbound_list, invalidate_panel_cache, get_panel_groups
 
 
 def _panel_terms(panel_type: str) -> dict:

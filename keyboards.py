@@ -137,15 +137,21 @@ def admin_categories_kb(categories):
     buttons.append([InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def admin_cat_detail_kb(cat_id, is_active):
+def admin_cat_detail_kb(cat_id, is_active, show_groups_button=False):
     toggle_text = "❌ غیرفعال کردن" if is_active else "✅ فعال کردن"
-    return InlineKeyboardMarkup(inline_keyboard=[
+    rows = [
         [InlineKeyboardButton(text="✏️ تغییر نام", callback_data=f"admin:edit_cat:{cat_id}:name"),
          InlineKeyboardButton(text="🖥 تغییر پنل", callback_data=f"admin:edit_cat:{cat_id}:panel")],
-        [InlineKeyboardButton(text=toggle_text, callback_data=f"admin:toggle_cat:{cat_id}"),
-         InlineKeyboardButton(text="🗑 حذف دسته", callback_data=f"admin:del_cat:{cat_id}")],
-        [InlineKeyboardButton(text="🔙 برگشت به لیست دسته‌ها", callback_data="admin:categories")],
-    ])
+    ]
+    if show_groups_button:
+        # فقط برای دسته‌بندی‌هایی که به یک پنل PasarGuard متصل هستن نشون داده
+        # می‌شه — بدون انتخاب حداقل یک گروه، اکانت‌های این دسته config واقعی
+        # (پروکسی/vless و...) نمی‌گیرن.
+        rows.append([InlineKeyboardButton(text="🎛 گروه‌های PasarGuard", callback_data=f"admin:cat_groups:{cat_id}")])
+    rows.append([InlineKeyboardButton(text=toggle_text, callback_data=f"admin:toggle_cat:{cat_id}"),
+         InlineKeyboardButton(text="🗑 حذف دسته", callback_data=f"admin:del_cat:{cat_id}")])
+    rows.append([InlineKeyboardButton(text="🔙 برگشت به لیست دسته‌ها", callback_data="admin:categories")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_services_kb(services):
