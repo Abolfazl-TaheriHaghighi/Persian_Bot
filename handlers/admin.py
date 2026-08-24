@@ -864,12 +864,36 @@ async def admin_edit_balance_amount(message: types.Message, state: FSMContext, b
 # FREE TRIAL MANAGEMENT
 # ================================================================
 
+async def _get_trial_panel_info(cfg) -> tuple[str, bool]:
+    """
+    پیدا کردن برچسب نمایشی و اینکه آیا پنل انتخاب‌شده برای تست از نوع
+    PasarGuard هست یا نه (برای نشون دادن/مخفی کردن دکمه‌ی گروه‌ها).
+    """
+    panel_id = cfg[6] if len(cfg) > 6 else None
+    if not panel_id:
+        return "پنل #۱ (پیش‌فرض)", False
+    panel_row = await run_db(get_panel, panel_id)
+    if not panel_row:
+        return "⚠️ پنل انتخابی حذف شده", False
+    ptype = (panel_row[2] or "3x-ui")
+    return f"{panel_row[1]} ({ptype.upper()})", ptype.lower() == "pasarguard"
+
+
+async def _render_trial_menu(target):
+    cfg = await run_db(get_trial_config)
+    panel_label, is_pasarguard = await _get_trial_panel_info(cfg)
+    kb = admin_trial_menu_kb(cfg, panel_label, show_groups_button=is_pasarguard)
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=kb)
+    else:
+        await target.answer("🧪 مدیریت تست رایگان:", reply_markup=kb)
+
+
 @router.callback_query(F.data == "admin:trial_menu")
 async def admin_trial_menu(call: types.CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    cfg = await run_db(get_trial_config)
-    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb(cfg))
+    await _render_trial_menu(call)
     await call.answer()
 
 
@@ -881,8 +905,7 @@ async def admin_trial_toggle(call: types.CallbackQuery):
     new_val = not cfg[0]
     await run_db(update_trial_config, is_enabled=new_val)
     await call.answer("✅ فعال شد" if new_val else "❌ غیرفعال شد", show_alert=True)
-    cfg = await run_db(get_trial_config)
-    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb(cfg))
+    await _render_trial_menu(call)
 
 
 @router.callback_query(F.data == "admin:trial_toggle_ref")
@@ -893,8 +916,115 @@ async def admin_trial_toggle_ref(call: types.CallbackQuery):
     new_val = not cfg[3]
     await run_db(update_trial_config, require_referral=new_val)
     await call.answer("✅ نیاز به رفرال فعال شد" if new_val else "❌ نیاز به رفرال حذف شد", show_alert=True)
+    await _render_trial_menu(call)
+
+
+# ---- انتخاب پنل و گروه‌های PasarGuard مخصوص تست رایگان ----
+
+@router.callback_query(F.data == "admin:trial_set_panel")
+async def admin_trial_set_panel_start(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    panels = await run_db(get_all_panels)
+    if not panels:
+        await call.answer("هنوز هیچ پنلی ثبت نشده — اول از «⚙️ تنظیمات پنل VPN» یه پنل بساز.", show_alert=True)
+        return
+
+    buttons = [
+        [InlineKeyboardButton(text=f"🖥 {p[1]} ({p[2].upper()})", callback_data=f"admin:trial_choose_panel:{p[0]}")]
+        for p in panels
+    ]
+    buttons.append([InlineKeyboardButton(text="🔙 انصراف", callback_data="admin:trial_menu")])
+    await call.message.edit_text(
+        "🖥 تست رایگان روی کدوم پنل ساخته بشه؟",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:trial_choose_panel:"))
+async def admin_trial_choose_panel(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    pid = int(call.data.split(":")[2])
+    # با تغییر پنل تست، گروه‌های قبلی (که مخصوص پنل قبلی بودن) بی‌معنی
+    # می‌شن — پاکشون می‌کنیم تا گروهِ پنل قبلی به اشتباه برای پنل جدید نمونه.
+    await run_db(update_trial_config, panel_id=pid, panel_group_ids="")
+
+    panel_row = await run_db(get_panel, pid)
+    ptype = (panel_row[2] if panel_row else "3x-ui") or "3x-ui"
+
+    if ptype.lower() == "pasarguard":
+        await call.answer("✅ پنل تنظیم شد — حالا گروه(ها) رو انتخاب کن", show_alert=True)
+        await _render_trial_group_select(call)
+        return
+
+    await call.answer("✅ پنل تست رایگان تنظیم شد", show_alert=True)
+    await _render_trial_menu(call)
+
+
+async def _render_trial_group_select(call: types.CallbackQuery):
     cfg = await run_db(get_trial_config)
-    await call.message.edit_text("🧪 مدیریت تست رایگان:", reply_markup=admin_trial_menu_kb(cfg))
+    panel_id = cfg[6] if len(cfg) > 6 else None
+    if not panel_id:
+        await call.answer("اول باید پنل تست رو انتخاب کنی.", show_alert=True)
+        return
+
+    groups = await get_panel_groups(panel_id)
+    raw_selected = cfg[7] if len(cfg) > 7 and cfg[7] else ""
+    selected = {g for g in raw_selected.split(",") if g}
+
+    if not groups:
+        text = (
+            "🎛 گروه‌های PasarGuard تست رایگان\n\n"
+            "❌ نتونستم لیست گروه‌ها رو از پنل بگیرم (یا پنل هیچ گروهی نداره).\n"
+            "اتصال پنل رو از «⚙️ تنظیمات پنل VPN» چک کن."
+        )
+        buttons = [[InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:trial_menu")]]
+    else:
+        text = (
+            "🎛 گروه‌های PasarGuard تست رایگان\n\n"
+            "بدون انتخاب حداقل یک گروه، اکانت‌های تست کانفیگ/پروکسی واقعی نخواهند داشت.\n"
+            "روی گروه‌های مدنظرت بزن (هر تپ فوراً ذخیره می‌شه):"
+        )
+        buttons = []
+        for g in groups:
+            gid = str(g.get("id"))
+            checked = "✅" if gid in selected else "⬜️"
+            buttons.append([InlineKeyboardButton(
+                text=f"{checked} {g.get('name')} (#{gid})",
+                callback_data=f"admin:trial_grp_toggle:{gid}"
+            )])
+        buttons.append([InlineKeyboardButton(text="🔙 برگشت به منوی تست", callback_data="admin:trial_menu")])
+
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data == "admin:trial_groups")
+async def admin_trial_groups_menu(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    await _render_trial_group_select(call)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:trial_grp_toggle:"))
+async def admin_trial_grp_toggle(call: types.CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    gid = call.data.split(":")[2]
+
+    cfg = await run_db(get_trial_config)
+    raw_selected = cfg[7] if len(cfg) > 7 and cfg[7] else ""
+    current = {g for g in raw_selected.split(",") if g}
+    if gid in current:
+        current.discard(gid)
+    else:
+        current.add(gid)
+
+    await run_db(update_trial_config, panel_group_ids=",".join(sorted(current)))
+    await _render_trial_group_select(call)
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith("admin:trial_set:"))

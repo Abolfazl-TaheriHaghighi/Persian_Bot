@@ -1,7 +1,7 @@
 import logging
 import time
 import aiohttp
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, quote
 
 from .base import BasePanelClient, _REQUEST_TIMEOUT
@@ -164,57 +164,6 @@ class PasarguardClient(BasePanelClient):
             "inbound_ids": inbound_ids,
         }
 
-    async def renew_client(self, email: str, add_days: int = 0, add_bytes: int = 0) -> dict | None:
-        # ۱. دریافت اطلاعات فعلی کاربر
-        current_data = await self._request("GET", f"/api/user/{quote(email, safe='')}")
-        if not current_data:
-            logger.error(f"Failed to fetch user {email} for renewal.")
-            return None
-
-        new_payload = {}
-        
-        # ۲. محاسبه حجم جدید
-        if add_bytes > 0:
-            current_limit = current_data.get("data_limit", 0)
-            new_payload["data_limit"] = current_limit + add_bytes
-
-        # ۳. محاسبه تاریخ انقضای جدید
-        if add_days > 0:
-            current_expire_str = current_data.get("expire")
-            current_time = time.time()
-            expire_timestamp = current_time  # پیش‌فرض: محاسبه از همین الان
-            
-            # اگر کاربر از قبل تاریخ انقضا دارد، آن را به Timestamp تبدیل می‌کنیم
-            if current_expire_str:
-                try:
-                    if current_expire_str.endswith("Z"):
-                        current_expire_str = current_expire_str.replace("Z", "+00:00")
-                    dt = datetime.fromisoformat(current_expire_str)
-                    ts = dt.timestamp()
-                    
-                    # اگر تاریخ انقضای فعلی هنوز نگذشته است، روزهای جدید را به آن اضافه می‌کنیم
-                    if ts > current_time:
-                        expire_timestamp = ts
-                except Exception as e:
-                    logger.error(f"Time parse error in renew: {e}")
-            
-            # اضافه کردن روزهای جدید و تبدیل مجدد به فرمت استاندارد پاسارگارد
-            new_expire_ms = int((expire_timestamp + (add_days * 86400)) * 1000)
-            expire_dt = datetime.fromtimestamp(new_expire_ms / 1000.0, tz=timezone.utc)
-            new_payload["expire"] = expire_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-        # ۴. تغییر وضعیت کاربر به فعال (در صورتی که قبلاً منقضی و غیرفعال شده باشد)
-        new_payload["status"] = "active"
-
-        # ۵. ارسال درخواست آپدیت به پنل
-        resp = await self._request("PUT", f"/api/user/{quote(email, safe='')}", payload=new_payload)
-        
-        # فایل panel.py در تابع renew_vpn_account انتظار دارد کلید success برگردانده شود
-        if resp:
-            return {"success": True}
-        
-        return None
-
     async def get_client_stat(self, email: str) -> dict | None:
         data = await self._request("GET", f"/api/user/{quote(email, safe='')}")
         if not data:
@@ -238,6 +187,49 @@ class PasarguardClient(BasePanelClient):
             "down": 0,
             "expiryTime": expire_ms,
         }
+
+    async def renew_client(self, email: str, add_days: int = 0, add_bytes: int = 0) -> dict | None:
+        """
+        تمدید اشتراک — چون PasarGuard endpoint اختصاصی مثل bulkAdjust ثنایی
+        نداره، اول مقدار فعلی expire/data_limit رو با GET می‌گیریم، روز/حجم
+        درخواستی رو روش جمع می‌کنیم و با PUT مقدار جدید رو ذخیره می‌کنیم.
+        """
+        if not add_days and not add_bytes:
+            return None
+
+        current = await self._request("GET", f"/api/user/{quote(email, safe='')}")
+        if not current:
+            return None
+
+        # محاسبه‌ی expire جدید — جمع روی مقدار فعلی (نه از "الان")، دقیقاً
+        # همون رفتاری که برای 3x-ui هم داریم، حتی اگه اشتراک منقضی شده باشه.
+        current_expire_str = current.get("expire")
+        current_expire_dt = None
+        if current_expire_str:
+            try:
+                cleaned = current_expire_str.replace("Z", "+00:00") if current_expire_str.endswith("Z") else current_expire_str
+                current_expire_dt = datetime.fromisoformat(cleaned)
+            except Exception as e:
+                logger.error(f"Pasarguard renew: expire parse error: {e}")
+
+        if current_expire_dt is None:
+            current_expire_dt = datetime.now(timezone.utc)
+
+        new_expire_dt = current_expire_dt + timedelta(days=add_days) if add_days else current_expire_dt
+        new_expire_str = new_expire_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        current_data_limit = current.get("data_limit") or 0
+        new_data_limit = current_data_limit + add_bytes if add_bytes else current_data_limit
+
+        payload = {
+            "expire": new_expire_str,
+            "data_limit": new_data_limit,
+        }
+
+        resp = await self._request("PUT", f"/api/user/{quote(email, safe='')}", payload=payload)
+        if not resp:
+            return None
+        return {"success": True, "adjusted": resp}
 
     async def set_client_group(self, email: str, group: str) -> bool:
         if not group:

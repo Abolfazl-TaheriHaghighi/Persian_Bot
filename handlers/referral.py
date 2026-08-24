@@ -28,7 +28,7 @@ router = Router()
 @router.callback_query(F.data == "menu:trial")
 async def free_trial_start(call: types.CallbackQuery, state: FSMContext):
     cfg = await run_db(get_trial_config)
-    is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses = cfg
+    is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses, panel_id, panel_group_ids = cfg
 
     if not is_enabled:
         await call.message.edit_text("❌ در حال حاضر تست رایگان فعال نیست.", reply_markup=home_button_kb())
@@ -122,7 +122,13 @@ async def _give_free_trial(message, user_id: int, username: str, phone: str, cfg
     from aiogram.types import BufferedInputFile
     from panel import create_vpn_account
 
-    is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses = cfg
+    is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses, panel_id, panel_group_ids = cfg
+    panel_id = panel_id or 1
+
+    # گروه‌های PasarGuard انتخاب‌شده برای تست رایگان — برای 3x-ui خالی و
+    # بی‌اثره؛ برای PasarGuard اگه اینجا خالی باشه، اکانت تست بدون هیچ
+    # Group ای ساخته می‌شه و کانفیگ/پروکسی واقعی نخواهد داشت.
+    group_ids = [x.strip() for x in (panel_group_ids or "").split(",") if x.strip().isdigit()]
 
     await run_db(record_trial_use, phone, user_id)
 
@@ -147,7 +153,10 @@ async def _give_free_trial(message, user_id: int, username: str, phone: str, cfg
     # ایمیل و گروه پنل با تابع مرکزی آماده می‌شن (همون منطقی که برای خرید عادی و
     # پلن دلخواه هم استفاده می‌شه، تا شمارنده‌ی برند و گروه‌بندی یکپارچه بمونه)
     email, group = await prepare_new_client(user_id)
-    result = await create_vpn_account(user_id, email, duration_days, float(data_limit_gb), group=group)
+    result = await create_vpn_account(
+        user_id, email, duration_days, float(data_limit_gb),
+        group=group, panel_id=panel_id, inbound_ids=group_ids or None
+    )
 
     if result:
         await run_db(save_vpn_account,
@@ -159,7 +168,8 @@ async def _give_free_trial(message, user_id: int, username: str, phone: str, cfg
             data_limit=result["data_limit"],
             is_trial=True,
             sub_id=result.get("sub_id"),
-            sub_url=result.get("sub_url")
+            sub_url=result.get("sub_url"),
+            panel_id=panel_id
         )
         import datetime
         import html

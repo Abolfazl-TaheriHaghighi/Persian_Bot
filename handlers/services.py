@@ -698,6 +698,15 @@ async def custom_plan_confirm(call: types.CallbackQuery, state: FSMContext, bot:
         except Exception:
             inbound_ids = None
 
+    if not inbound_ids:
+        # اگه این زیرگروه خودش Inbound/Group مشخصی نداشته باشه، از گروه‌های
+        # سطح دسته‌بندی (categories.panel_group_ids) استفاده کن — این برای
+        # PasarGuard حیاتیه، وگرنه اکانت بدون هیچ Group ای ساخته می‌شه و
+        # کانفیگ/پروکسی نخواهد داشت.
+        category_group_ids = await run_db(get_category_panel_group_ids, cat_id)
+        if category_group_ids:
+            inbound_ids = [int(x) for x in category_group_ids if x.isdigit()]
+
     await _create_custom_vpn(bot, user_id, purchase_id, service_name, gb, days, inbound_ids, panel_id)
 
 

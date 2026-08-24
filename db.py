@@ -405,6 +405,13 @@ def init_db():
     # هیچ config/پروکسی واقعی‌ای نخواهند داشت (چون به هیچ Group ای متصل نیستن).
     cur.execute("ALTER TABLE categories ADD COLUMN IF NOT EXISTS panel_group_ids TEXT DEFAULT ''")
 
+    # ---- پنل و گروه‌های PasarGuard مخصوص تست رایگان ----
+    # قبلاً تست رایگان همیشه روی panel_id=1 ساخته می‌شد (بدون امکان انتخاب)؛
+    # حالا ادمین می‌تونه از منوی «مدیریت تست رایگان» هر پنلی رو انتخاب کنه، و
+    # اگه آن پنل از نوع PasarGuard باشه، گروه(ها) رو هم مشخص کنه.
+    cur.execute("ALTER TABLE free_trial_config ADD COLUMN IF NOT EXISTS panel_id INTEGER REFERENCES panel_config(id) ON DELETE SET NULL")
+    cur.execute("ALTER TABLE free_trial_config ADD COLUMN IF NOT EXISTS panel_group_ids TEXT DEFAULT ''")
+
     conn.commit()
     conn.close()
 
@@ -1155,10 +1162,14 @@ def delete_discount_code(dc_id):
 # ================== FREE TRIAL ==================
 
 def get_trial_config():
-    """برمی‌گردونه (is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses)"""
+    """برمی‌گردونه (is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses, panel_id, panel_group_ids)"""
     conn = connect()
     cur = conn.cursor()
-    cur.execute("SELECT is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses FROM free_trial_config WHERE id=1")
+    cur.execute("""
+        SELECT is_enabled, duration_days, data_limit_gb, require_referral, min_referrals,
+               default_max_uses, panel_id, panel_group_ids
+        FROM free_trial_config WHERE id=1
+    """)
     r = cur.fetchone()
     conn.close()
     return r
@@ -1166,7 +1177,8 @@ def get_trial_config():
 
 def update_trial_config(**kwargs):
     """آپدیت یک یا چند فیلد از کانفیگ تست"""
-    allowed = {"is_enabled", "duration_days", "data_limit_gb", "require_referral", "min_referrals", "default_max_uses"}
+    allowed = {"is_enabled", "duration_days", "data_limit_gb", "require_referral", "min_referrals",
+               "default_max_uses", "panel_id", "panel_group_ids"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return
@@ -1176,6 +1188,7 @@ def update_trial_config(**kwargs):
     cur.execute(f"UPDATE free_trial_config SET {set_clause} WHERE id=1", list(fields.values()))
     conn.commit()
     conn.close()
+
 
 
 def get_trial_use_count(phone):

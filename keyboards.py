@@ -205,21 +205,29 @@ def admin_discounts_kb(codes):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def admin_trial_menu_kb(cfg):
-    is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses = cfg
+def admin_trial_menu_kb(cfg, panel_label="پنل ۱ (پیش‌فرض)", show_groups_button=False):
+    is_enabled, duration_days, data_limit_gb, require_referral, min_referrals, default_max_uses, panel_id, panel_group_ids = cfg
     status = "✅ فعال" if is_enabled else "❌ غیرفعال"
     ref_req = "✅ بله" if require_referral else "❌ خیر"
-    return InlineKeyboardMarkup(inline_keyboard=[
+    rows = [
         [InlineKeyboardButton(text=f"وضعیت: {status}", callback_data="admin:trial_toggle")],
         [InlineKeyboardButton(text=f"⏳ مدت: {duration_days} روز", callback_data="admin:trial_set:duration_days")],
         [InlineKeyboardButton(text=f"📶 حجم: {data_label_short(data_limit_gb)}", callback_data="admin:trial_set:data_limit_gb")],
         [InlineKeyboardButton(text=f"🔗 نیاز رفرال: {ref_req}", callback_data="admin:trial_toggle_ref")],
         [InlineKeyboardButton(text=f"👥 حداقل رفرال: {min_referrals}", callback_data="admin:trial_set:min_referrals")],
         [InlineKeyboardButton(text=f"🔢 تست پیش‌فرض: {default_max_uses} بار", callback_data="admin:trial_set:default_max_uses")],
+        [InlineKeyboardButton(text=f"🖥 پنل تست: {panel_label}", callback_data="admin:trial_set_panel")],
+    ]
+    if show_groups_button:
+        # فقط وقتی پنل انتخاب‌شده برای تست از نوع PasarGuard باشه نشون داده
+        # می‌شه — بدون انتخاب حداقل یک گروه، اکانت‌های تست کانفیگ نخواهند داشت.
+        rows.append([InlineKeyboardButton(text="🎛 گروه‌های PasarGuard تست", callback_data="admin:trial_groups")])
+    rows.extend([
         [InlineKeyboardButton(text="📱 مدیریت شماره‌ها", callback_data="admin:trial_phones")],
         [InlineKeyboardButton(text="📋 لیست تست‌های گرفته‌شده", callback_data="admin:trial_uses")],
         [InlineKeyboardButton(text="🔙 برگشت", callback_data="admin:back")],
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_referral_menu_kb(cfg):
